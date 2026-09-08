@@ -4,6 +4,7 @@ Tests static PE parsing, API hash detection, behavioral log ingestion,
 and DOCX report generation.
 """
 import unittest
+import os
 from pathlib import Path
 import docx
 
@@ -77,9 +78,10 @@ class Test0206Pipeline(unittest.TestCase):
         doc = docx.Document(str(out_path))
         self.assertGreater(len(doc.tables), 0)
 
-        # Test optional SANS template if present on host
-        sans_tpl = Path("/run/media/kali/New Volume/malware/Malware_Analysis_Report_Template.docx")
-        if sans_tpl.exists():
+        # Test optional template if configured via environment
+        template_env = os.getenv("0206_TEST_TEMPLATE")
+        if template_env and Path(template_env).exists():
+            sans_tpl = Path(template_env)
             sans_out = TESTS_DIR / "sans_test_report.docx"
             sans_reporter = FOR610ReportGenerator(template_path=sans_tpl)
             sans_res = sans_reporter.generate(static_data, beh_data, ai_data, sans_out)

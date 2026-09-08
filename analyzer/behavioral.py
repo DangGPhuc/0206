@@ -16,9 +16,11 @@ from scapy.all import PcapReader, DNS, DNSQR, DNSRR, IP, TCP, UDP, Raw
 
 from config import (
     MAX_PCAP_SIZE, MAX_PACKETS, MAX_LOG_ROWS,
+    MAX_TRACKED_CONNECTIONS, MAX_TIMESTAMPS_PER_CONNECTION,
     BEACON_WEIGHTS
 )
 from core.evidence import EvidenceStore, EvidenceState
+
 
 
 class BehavioralAnalyzer:
@@ -102,11 +104,14 @@ class BehavioralAnalyzer:
                             ip_counts[dst_ip] = ip_counts.get(dst_ip, 0) + 1
                             key = (dst_ip, dport)
                             if key not in conversations:
-                                conversations[key] = {"timestamps": [], "payload_sizes": []}
-                            conversations[key]["timestamps"].append(pkt_time)
-                            
-                            payload_len = len(pkt[Raw].load) if pkt.haslayer(Raw) else 0
-                            conversations[key]["payload_sizes"].append(payload_len)
+                                if len(conversations) < MAX_TRACKED_CONNECTIONS:
+                                    conversations[key] = {"timestamps": [], "payload_sizes": []}
+                            if key in conversations:
+                                if len(conversations[key]["timestamps"]) < MAX_TIMESTAMPS_PER_CONNECTION:
+                                    conversations[key]["timestamps"].append(pkt_time)
+                                    payload_len = len(pkt[Raw].load) if pkt.haslayer(Raw) else 0
+                                    conversations[key]["payload_sizes"].append(payload_len)
+
 
                     # DNS Inspection
                     if pkt.haslayer(DNS):
@@ -242,15 +247,24 @@ class BehavioralAnalyzer:
             )
             beacon_score = round(beacon_score, 4)
 
-            # Classify
-            if beacon_score >= 0.80:
-                cls = "HIGH_CONFIDENCE_BEACON"
+            # Phase 15: Calibrated C2 / Beacon Terminology
+            # Multi-source corroboration check (e.g. matched HTTP request to same destination)
+            has_corroboration = any(
+                req.get("dst_ip") == dst_ip or dst_ip in req.get("host", "")
+                for req in http_requests
+            )
+            if beacon_score >= 0.85:
+                cls = "CONFIRMED_C2" if has_corroboration else "LIKELY_C2_BEACON"
+                ev_state = EvidenceState.OBSERVED if has_corroboration else EvidenceState.INFERRED
             elif beacon_score >= 0.60:
-                cls = "LIKELY_BEACON"
-            elif beacon_score >= 0.30:
-                cls = "SUSPICIOUS"
+                cls = "SUSPECTED_BEACONING"
+                ev_state = EvidenceState.INFERRED
+            elif beacon_score >= 0.35:
+                cls = "OBSERVED_PERIODIC_TRAFFIC"
+                ev_state = EvidenceState.HEURISTIC
             else:
                 cls = "NORMAL"
+                ev_state = EvidenceState.OBSERVED
 
             candidate = {
                 "destination_ip": dst_ip,
@@ -265,6 +279,7 @@ class BehavioralAnalyzer:
                 "max_interval": round(max(intervals), 3),
                 "periodicity_score": round(periodicity_score, 3),
                 "beacon_score": beacon_score,
+                "corroborated": has_corroboration,
                 "classification": cls
             }
 
@@ -272,9 +287,10 @@ class BehavioralAnalyzer:
                 beacons.append(candidate)
                 self.evidence_store.create(
                     artifact_name, "PCAP_BEACON", "beacon_analysis", candidate,
-                    "BehavioralAnalyzer", confidence=beacon_score,
+                    "BehavioralAnalyzer", confidence=beacon_score, state=ev_state,
                     provenance={"destination_ip": dst_ip, "port": dst_port}
                 )
+
 
         results["c2_beacons"] = sorted(beacons, key=lambda x: x["beacon_score"], reverse=True)
         return results

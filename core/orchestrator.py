@@ -18,10 +18,12 @@ Responsibilities:
 - Output lineage hashing and manifest finalization
 """
 import os
+import time
 import json
 from pathlib import Path
 from dataclasses import dataclass, field
 from typing import Optional, List, Dict, Any, Callable
+
 
 from config import (
     ENGINE_NAME, ENGINE_VERSION,
@@ -35,6 +37,7 @@ from core.findings import FindingEngine, Finding, Assessment
 from core.manifest import AnalysisManifest
 from core.privacy import PrivacyMode, PrivacyRedactor, BLOCK_REMOTE_TRANSMISSION
 from core.validators import validate_finding_evidence_grounding
+from integrations.registry import CapabilityRegistry
 
 from analyzer.static import PEStaticAnalyzer
 from analyzer.behavioral import BehavioralAnalyzer
@@ -64,12 +67,20 @@ class OrchestrationResult:
     evidence_json: Path
     findings_json: Path
     manifest_json: Path
+    manifest_sha256: Path
+    assessment_json: Optional[Path] = None
+    iocs_json: Optional[Path] = None
+    coverage_json: Optional[Path] = None
     warnings: List[str] = field(default_factory=list)
 
 
 class AnalysisOrchestrator:
     """
     Coordinates and drives the entire 0206 malware triage and report generation lifecycle.
+    Guarantees the strict 12-stage pipeline:
+      INPUT -> RESOURCE POLICY -> MANIFEST -> ANALYZERS -> EVIDENCE STORE ->
+      FINDING ENGINE -> VALIDATION -> DETERMINISTIC ASSESSMENT -> PRIVACY/DLP ->
+      OPTIONAL AI ENRICHMENT -> AI VALIDATION -> REPORT -> OUTPUT LINEAGE
     """
 
     def __init__(self, resource_policy: Optional[ResourcePolicy] = None):
@@ -88,6 +99,10 @@ class AnalysisOrchestrator:
         api_key: Optional[str] = None,
         model: str = "gpt-4o",
         template_path: Optional[str | Path] = None,
+        yara_rules: Optional[str | Path] = None,
+        backend: str = "memory",
+        adaptive: bool = False,
+        portable: bool = False,
         step_callback: Optional[Callable[[str, int], None]] = None
     ) -> OrchestrationResult:
         """
@@ -98,16 +113,22 @@ class AnalysisOrchestrator:
                 step_callback(message, step)
 
         # -------------------------------------------------------------
-        # 1. Input Validation & Resource Safety
+        # 1. INPUT VALIDATION & RESOURCE POLICY
         # -------------------------------------------------------------
         notify("Validating input artifacts and resource policies...", 1)
         p_sample = Path(sample_path) if sample_path else None
         p_pcap = Path(pcap_path) if pcap_path else None
         p_procmon = Path(procmon_path) if procmon_path else None
         p_regshot = Path(regshot_path) if regshot_path else None
+        p_yara_rules = Path(yara_rules) if yara_rules else None
 
         if not p_sample and not p_pcap and not p_procmon and not p_regshot:
             raise ValueError("At least one input artifact (--sample, --pcap, or --procmon) is required.")
+
+        # Portable mode guarantees: offline, no remote AI, strict privacy, sanitized machine paths
+        if portable:
+            offline = True
+            privacy_mode = "strict"
 
         warnings: List[str] = []
 
@@ -129,29 +150,37 @@ class AnalysisOrchestrator:
         out_dir.mkdir(parents=True, exist_ok=True)
 
         # -------------------------------------------------------------
-        # 2. Manifest & Evidence Store Initialization
+        # 2. MANIFEST INITIALIZATION
         # -------------------------------------------------------------
         notify("Initializing Evidence Store and Analysis Manifest...", 2)
         prof_cfg = get_profile(profile)
+        
+        # In portable mode, sanitize host paths recorded in CLI arguments
+        def sanitize_path(p: Optional[Path]) -> Optional[str]:
+            if not p:
+                return None
+            return p.name if portable else str(p)
+
         manifest = AnalysisManifest(
             privacy_mode=privacy_mode,
-            profile=prof_cfg.name.value,
+            profile=prof_cfg.name.value if not adaptive else "adaptive",
             cli_arguments={
-                "sample": str(p_sample) if p_sample else None,
-                "pcap": str(p_pcap) if p_pcap else None,
-                "procmon": str(p_procmon) if p_procmon else None,
-                "regshot": str(p_regshot) if p_regshot else None,
+                "sample": sanitize_path(p_sample),
+                "pcap": sanitize_path(p_pcap),
+                "procmon": sanitize_path(p_procmon),
+                "regshot": sanitize_path(p_regshot),
                 "profile": profile,
                 "privacy": privacy_mode,
-                "offline": offline
+                "offline": offline,
+                "adaptive": adaptive,
+                "portable": portable,
+                "backend": backend,
+                "yara_rules": sanitize_path(p_yara_rules)
             }
         )
         manifest.warnings.extend(warnings)
 
-        evidence_store = EvidenceStore()
-        privacy_redactor = PrivacyRedactor(mode=privacy_mode)
-
-        # Record input artifacts streaming hashes into manifest
+        # Record input artifact streaming hashes into manifest
         if p_sample and p_sample.exists():
             manifest.record_artifact("sample", p_sample)
             manifest.sample_filename = p_sample.name
@@ -165,33 +194,44 @@ class AnalysisOrchestrator:
             manifest.record_artifact("regshot", p_regshot)
 
         # -------------------------------------------------------------
-        # 3. Static Analyzers & Capstone Code Triage
+        # 3. EVIDENCE STORE INITIALIZATION (Scalable Memory or SQLite)
+        # -------------------------------------------------------------
+        db_file = str(out_dir / "evidence.db") if backend == "sqlite" else None
+        evidence_store = EvidenceStore(backend=backend, db_path=db_file)
+        privacy_redactor = PrivacyRedactor(mode=privacy_mode)
+
+        # -------------------------------------------------------------
+        # 4. ANALYZERS EXECUTION (Static, Code, Behavioral, Adapters)
         # -------------------------------------------------------------
         static_data: Dict[str, Any] = {}
         code_data: Dict[str, Any] = {}
+        behavioral_data: Dict[str, Any] = {}
 
+        # 4a. Static PE Analyzer
         if p_sample and prof_cfg.enable_static:
             notify("Executing static PE analysis and section entropy triage...", 3)
+            t0 = time.perf_counter()
             static_analyzer = PEStaticAnalyzer(p_sample, evidence_store=evidence_store)
             static_data = static_analyzer.analyze()
+            manifest.record_timing("PEStaticAnalyzer", (time.perf_counter() - t0) * 1000.0)
             manifest.analyzers_enabled.append("PEStaticAnalyzer")
 
             if prof_cfg.enable_code:
                 notify("Executing static code triage (Capstone entry-point disassembly)...", 4)
+                t0 = time.perf_counter()
                 code_analyzer = CodeAnalyzer(p_sample, evidence_store=evidence_store)
                 code_data = code_analyzer.analyze()
+                manifest.record_timing("CodeAnalyzer", (time.perf_counter() - t0) * 1000.0)
                 manifest.analyzers_enabled.append("CodeAnalyzer")
             else:
                 manifest.analyzers_skipped.append("CodeAnalyzer")
         else:
             manifest.analyzers_skipped.extend(["PEStaticAnalyzer", "CodeAnalyzer"])
 
-        # -------------------------------------------------------------
-        # 4. Behavioral Analyzers (PCAP, Procmon, Regshot)
-        # -------------------------------------------------------------
-        behavioral_data: Dict[str, Any] = {}
+        # 4b. Behavioral Telemetry (PCAP, Procmon, Regshot)
         if prof_cfg.enable_behavioral and (p_pcap or p_procmon or p_regshot):
             notify("Ingesting behavioral telemetry (PCAP streaming & Procmon logs)...", 5)
+            t0 = time.perf_counter()
             beh_analyzer = BehavioralAnalyzer(
                 pcap_path=str(p_pcap) if p_pcap else None,
                 procmon_path=str(p_procmon) if p_procmon else None,
@@ -199,42 +239,74 @@ class AnalysisOrchestrator:
                 evidence_store=evidence_store
             )
             behavioral_data = beh_analyzer.analyze()
+            manifest.record_timing("BehavioralAnalyzer", (time.perf_counter() - t0) * 1000.0)
             manifest.analyzers_enabled.append("BehavioralAnalyzer")
         else:
             manifest.analyzers_skipped.append("BehavioralAnalyzer")
 
-        # -------------------------------------------------------------
-        # 5. Optional Integrations (Tier 2 & Tier 3 Adapters)
-        # -------------------------------------------------------------
+        # 4c. Optional Integrations (Adaptive / Profile allowed)
         if p_sample:
-            for tool_name in prof_cfg.allowed_integrations:
-                adapter_cls = ADAPTER_REGISTRY.get(tool_name)
-                if adapter_cls:
-                    adapter = adapter_cls()
-                    if adapter.available():
-                        notify(f"Running optional adapter: {tool_name}...", 6)
-                        try:
-                            adapter.analyze(p_sample, evidence_store=evidence_store)
-                            manifest.analyzers_enabled.append(tool_name)
-                            manifest.adapter_versions[tool_name] = adapter.version
-                        except Exception as ex:
-                            manifest.warnings.append(f"Adapter {tool_name} failed: {ex}")
-                    else:
-                        manifest.analyzers_skipped.append(tool_name)
+            # Determine active tools: if adaptive, inspect host capabilities
+            if adaptive:
+                caps = CapabilityRegistry.get_capabilities()
+                target_tools = [
+                    tool_name for tool_name, info in caps.items()
+                    if tool_name in ADAPTER_REGISTRY and (
+                        not portable or info.get("tier", "").startswith("Tier 2")
+                    ) and info.get("status") in ("FUNCTIONAL", "READY", "DETECTED")
+                ]
+            else:
+                target_tools = [
+                    t for t in prof_cfg.allowed_integrations
+                    if not (portable and t in ("IDA Pro", "x64dbg", "WinDbg"))
+                ]
+
+            for tool_name in ADAPTER_REGISTRY:
+                adapter_cls = ADAPTER_REGISTRY[tool_name]
+                adapter = adapter_cls()
+
+                if tool_name in target_tools and adapter.available():
+                    notify(f"Running integration adapter: {tool_name}...", 6)
+                    # Pass specific configuration overrides
+                    kwargs: Dict[str, Any] = {}
+                    if tool_name == "YARA" and p_yara_rules:
+                        kwargs["rules_path"] = p_yara_rules
+
+                    adapter_result = adapter.execute(p_sample, evidence_store=evidence_store, **kwargs)
+                    manifest.record_adapter_result(adapter_result)
+                    manifest.record_timing(f"adapter_{tool_name}", adapter_result.duration_ms)
+                    manifest.analyzers_enabled.append(tool_name)
+                    manifest.adapter_versions[tool_name] = adapter.version
+                    if adapter_result.errors:
+                        manifest.errors.extend(adapter_result.errors)
+                    if adapter_result.warnings:
+                        manifest.warnings.extend(adapter_result.warnings)
+                else:
+                    manifest.analyzers_skipped.append(tool_name)
 
         # -------------------------------------------------------------
-        # 6. Finding Engine Correlation & Evidence Grounding
+        # 5. FINDING ENGINE CORRELATION
         # -------------------------------------------------------------
         notify("Correlating evidence facts into calibrated findings...", 7)
         finding_engine = FindingEngine(evidence_store)
         raw_findings = finding_engine.analyze()
+
+        # -------------------------------------------------------------
+        # 6. VALIDATION (Grounding check)
+        # -------------------------------------------------------------
         validated_findings, finding_warnings = validate_finding_evidence_grounding(raw_findings, evidence_store)
         manifest.warnings.extend(finding_warnings)
 
         # -------------------------------------------------------------
-        # 7. Privacy Redaction & DLP Boundary before AI
+        # 7. DETERMINISTIC ASSESSMENT
         # -------------------------------------------------------------
-        notify("Enforcing privacy/DLP security boundary...", 8)
+        notify("Computing deterministic assessment & explainable score...", 8)
+        assessment = finding_engine.assess(validated_findings)
+
+        # -------------------------------------------------------------
+        # 8. PRIVACY REDACTION & DLP BOUNDARY
+        # -------------------------------------------------------------
+        notify("Enforcing privacy/DLP security boundary...", 9)
         llm_provider = "offline" if (offline or prof_cfg.force_offline_ai) else "auto"
         
         # If remote AI is requested, perform DLP audit first
@@ -250,26 +322,69 @@ class AnalysisOrchestrator:
         manifest.ai_mode = llm_provider
 
         # -------------------------------------------------------------
-        # 8. Threat Synthesis & Assessment
+        # 9. OPTIONAL AI ENRICHMENT & AI VALIDATION
         # -------------------------------------------------------------
-        notify("Synthesizing threat assessment...", 9)
+        notify("Synthesizing threat assessment (AI / Heuristic)...", 10)
         synthesizer = LLMThreatSynthesizer(
             provider=llm_provider,
             api_key=api_key,
             model=model,
             privacy_mode=privacy_mode
         )
-        assessment = synthesizer.synthesize(evidence_store, validated_findings)
+        assessment = synthesizer.synthesize(evidence_store, validated_findings, base_assessment=assessment)
 
         # -------------------------------------------------------------
-        # 9. Multi-format Deliverable Generation
+        # 10. MULTI-FORMAT DELIVERABLE GENERATION
         # -------------------------------------------------------------
-        notify("Compiling deliverables (JSON, Markdown, DOCX, Evidence, Findings)...", 10)
+        notify("Compiling deliverables (JSON, Markdown, DOCX, Evidence, Findings)...", 11)
+
+        # Build structured Evidence Appendix for auditable reporting (Phase 20)
+        ev_map = {e.evidence_id: e for e in evidence_store.all()}
+        evidence_appendix = []
+        for f in validated_findings:
+            artifacts = set()
+            provenance_list = []
+            rules = set()
+            for eid in f.source_evidence_ids:
+                rec = ev_map.get(eid)
+                if rec:
+                    artifacts.add(rec.source_artifact or "N/A")
+                    if rec.derivation_rule:
+                        rules.add(rec.derivation_rule)
+                    loc_parts = []
+                    if rec.source_offset:
+                        loc_parts.append(f"offset={rec.source_offset}")
+                    if rec.source_line:
+                        loc_parts.append(f"line={rec.source_line}")
+                    if rec.source_packet_number:
+                        loc_parts.append(f"packet={rec.source_packet_number}")
+                    if rec.source_record_id:
+                        loc_parts.append(f"record={rec.source_record_id}")
+                    provenance_list.append({
+                        "evidence_id": eid,
+                        "source_type": rec.source_type,
+                        "field": rec.field,
+                        "location": ", ".join(loc_parts) if loc_parts else "N/A"
+                    })
+                else:
+                    provenance_list.append({"evidence_id": eid, "location": "N/A"})
+
+            evidence_appendix.append({
+                "finding_id": f.finding_id,
+                "status": f.evidence_level.value if hasattr(f.evidence_level, "value") else str(f.evidence_level),
+                "confidence": f.confidence,
+                "evidence_ids": f.source_evidence_ids,
+                "source_artifacts": sorted(list(artifacts)) if artifacts else ["N/A"],
+                "source_provenance": provenance_list,
+                "derivation_rule": ", ".join(sorted(rules)) if rules else "Direct observation"
+            })
+
         session_payload = {
             "manifest": manifest.model_dump(),
             "assessment": assessment.model_dump(),
             "findings": [f.model_dump() for f in validated_findings],
             "evidence_records": evidence_store.to_dict(),
+            "evidence_appendix": evidence_appendix,
             "raw_telemetry": {
                 "static": static_data,
                 "code_analysis": code_data,
@@ -312,27 +427,47 @@ class AnalysisOrchestrator:
         findings_json_path = out_dir / "findings.json"
         finding_engine.export(findings_json_path)
 
+        # 6. Assessment JSON export
+        assessment_json_path = out_dir / "assessment.json"
+        with open(assessment_json_path, "w", encoding="utf-8") as f:
+            f.write(json.dumps(assessment.model_dump(), indent=2))
+
+        # 7. IOCs JSON export
+        iocs_json_path = out_dir / "iocs.json"
+        with open(iocs_json_path, "w", encoding="utf-8") as f:
+            f.write(json.dumps({"host_iocs": assessment.host_iocs, "network_iocs": assessment.network_iocs}, indent=2))
+
+        # 8. Coverage JSON export
+        coverage_json_path = out_dir / "coverage.json"
+        with open(coverage_json_path, "w", encoding="utf-8") as f:
+            cov = getattr(assessment, "coverage", None)
+            cov_dict = cov.model_dump() if hasattr(cov, "model_dump") else (cov if isinstance(cov, dict) else {})
+            f.write(json.dumps(cov_dict, indent=2))
+
+        # 9. Ensure artifacts and figures directories exist
+        (out_dir / "artifacts").mkdir(parents=True, exist_ok=True)
+        (out_dir / "figures").mkdir(parents=True, exist_ok=True)
+
         # -------------------------------------------------------------
-        # 10. Finalize Manifest & Lineage Hashing
+        # 11. OUTPUT LINEAGE & MANIFEST INTEGRITY (No self-hashing)
         # -------------------------------------------------------------
-        notify("Finalizing audit manifest and output lineage hashes...", 11)
+        notify("Finalizing audit manifest and output lineage hashes...", 12)
         manifest_json_path = out_dir / "analysis_manifest.json"
         
-        # Record output artifact lineage
+        # Record output artifact lineage strictly excluding self-referential manifest files
         manifest.record_output_artifact("report.json", report_json_path)
         manifest.record_output_artifact("report.md", report_md_path)
         manifest.record_output_artifact("report.docx", report_docx_path)
         manifest.record_output_artifact("evidence.json", evidence_json_path)
         manifest.record_output_artifact("findings.json", findings_json_path)
+        manifest.record_output_artifact("assessment.json", assessment_json_path)
+        manifest.record_output_artifact("iocs.json", iocs_json_path)
+        manifest.record_output_artifact("coverage.json", coverage_json_path)
 
         manifest.complete()
-        manifest.export_json(manifest_json_path)
+        companion_sha256_path = manifest.export_json(manifest_json_path)
 
-        # Record manifest itself into final output
-        manifest.record_output_artifact("analysis_manifest.json", manifest_json_path)
-        manifest.export_json(manifest_json_path)
-
-        notify("Triage pipeline complete!", 12)
+        notify("Triage pipeline complete!", 13)
 
         return OrchestrationResult(
             case_id=manifest.case_id,
@@ -347,5 +482,13 @@ class AnalysisOrchestrator:
             evidence_json=evidence_json_path,
             findings_json=findings_json_path,
             manifest_json=manifest_json_path,
+            manifest_sha256=companion_sha256_path,
+            assessment_json=assessment_json_path,
+            iocs_json=iocs_json_path,
+            coverage_json=coverage_json_path,
             warnings=manifest.warnings
         )
+
+    # Developer ergonomics alias
+    analyze = run
+

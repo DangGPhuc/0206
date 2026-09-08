@@ -50,53 +50,61 @@ def run_doctor(console: Console) -> bool:
     console.print(core_table)
     console.print("")
 
+    def format_status(status_str: str) -> str:
+        if status_str == "FUNCTIONAL":
+            return "[bold green]FUNCTIONAL  ✓[/bold green]"
+        elif status_str == "READY":
+            return "[bold cyan]READY       ●[/bold cyan]"
+        elif status_str == "DETECTED":
+            return "[bold yellow]DETECTED    ▲[/bold yellow]"
+        elif status_str == "NOT_SUPPORTED":
+            return "[dim]NOT_SUPPORTED[/dim]"
+        elif status_str == "FAILED":
+            return "[bold red]FAILED      ✗[/bold red]"
+        return "[dim yellow]NOT_INSTALLED[/dim yellow]"
+
     # Optional Tier 2 Table
     opt_table = Table(title="⚙️ OPTIONAL Tier 2 Open-Source Analyzers (Enhancement Only)", show_header=True, header_style="bold yellow")
-    opt_table.add_column("Analyzer", style="bold white", width=18)
+    opt_table.add_column("Analyzer", style="bold white", width=12)
     opt_table.add_column("Status", width=16)
-    opt_table.add_column("Details / Binary Path", style="dim")
+    opt_table.add_column("Version", style="italic green", width=10)
+    opt_table.add_column("Capabilities & Diagnostics", style="dim")
 
     tier2_tools = ["YARA", "capa", "Ghidra", "radare2", "pe-sieve", "FLOSS"]
-    tier2_available = 0
+    tier2_functional = 0
 
     for tool in tier2_tools:
-        info = caps.get(tool, {"status": "NOT_INSTALLED"})
+        info = caps.get(tool, {"status": "NOT_INSTALLED", "version": "-", "details": "Optional"})
         status = info.get("status", "NOT_INSTALLED")
-        if status == "AVAILABLE":
-            tier2_available += 1
-            status_str = "[bold green]AVAILABLE  ✓[/bold green]"
-            details = info.get("path") or info.get("version") or "Installed"
-        else:
-            status_str = "[yellow]NOT_INSTALLED[/yellow]"
-            details = "Optional enhancement"
-        opt_table.add_row(tool, status_str, details)
+        if status in ("FUNCTIONAL", "READY", "DETECTED"):
+            tier2_functional += 1
+        status_disp = format_status(status)
+        ver_disp = info.get("version", "-")
+        diag_disp = info.get("details") or ", ".join(info.get("capabilities", []))
+        opt_table.add_row(tool, status_disp, ver_disp, diag_disp)
 
     console.print(opt_table)
     console.print("")
 
     # Proprietary Tier 3 Table
     prop_table = Table(title="🔒 PROPRIETARY Tier 3 Tools (External / User-Provided)", show_header=True, header_style="bold magenta")
-    prop_table.add_column("Tool", style="bold white", width=18)
+    prop_table.add_column("Tool", style="bold white", width=12)
     prop_table.add_column("Status", width=16)
-    prop_table.add_column("Details", style="dim")
+    prop_table.add_column("Version", style="italic green", width=10)
+    prop_table.add_column("Capabilities & Diagnostics", style="dim")
 
     tier3_tools = ["IDA Pro", "x64dbg", "WinDbg"]
-    tier3_available = 0
+    tier3_functional = 0
 
     for tool in tier3_tools:
-        info = caps.get(tool, {"status": "NOT_INSTALLED"})
+        info = caps.get(tool, {"status": "NOT_INSTALLED", "version": "-", "details": "Optional external"})
         status = info.get("status", "NOT_INSTALLED")
-        if status == "AVAILABLE":
-            tier3_available += 1
-            status_str = "[bold green]AVAILABLE  ✓[/bold green]"
-            details = info.get("path", "Detected")
-        elif status == "NOT_AVAILABLE_ON_PLATFORM":
-            status_str = "[dim]N/A ON OS[/dim]"
-            details = f"Not supported on {platform.system()}"
-        else:
-            status_str = "[dim yellow]NOT_INSTALLED[/dim yellow]"
-            details = "Optional external tool"
-        prop_table.add_row(tool, status_str, details)
+        if status in ("FUNCTIONAL", "READY", "DETECTED"):
+            tier3_functional += 1
+        status_disp = format_status(status)
+        ver_disp = info.get("version", "-")
+        diag_disp = info.get("details") or ", ".join(info.get("capabilities", []))
+        prop_table.add_row(tool, status_disp, ver_disp, diag_disp)
 
     console.print(prop_table)
     console.print("")
@@ -107,8 +115,8 @@ def run_doctor(console: Console) -> bool:
 
     summary = (
         f"[bold white]STATUS:[/bold white] {status_label}\n"
-        f"  • [cyan]OPTIONAL ANALYZERS:[/cyan]    {tier2_available}/{len(tier2_tools)} available\n"
-        f"  • [cyan]PROPRIETARY ANALYZERS:[/cyan] {tier3_available}/{len(tier3_tools)} available\n\n"
+        f"  • [cyan]OPTIONAL ANALYZERS:[/cyan]    {tier2_functional}/{len(tier2_tools)} active/ready\n"
+        f"  • [cyan]PROPRIETARY ANALYZERS:[/cyan] {tier3_functional}/{len(tier3_tools)} active/ready\n\n"
         f"[dim]Environment Specs:[/dim]\n"
         f"  • Python: {sys.version.split()[0]} | Platform: {platform.system()} ({platform.machine()})\n"
         f"  • Privacy Mode: strict (default) | Default AI: offline (deterministic)\n"
@@ -118,3 +126,4 @@ def run_doctor(console: Console) -> bool:
 
     console.print(Panel(summary, title="🏥 Doctor Diagnosis Summary", border_style=border_col))
     return all_core_ok
+

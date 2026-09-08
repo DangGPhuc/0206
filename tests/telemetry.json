@@ -2,7 +2,7 @@
   "static": {
     "file_info": {
       "file_name": "sample_benign_triage.exe",
-      "file_path": "/run/media/kali/New Volume/malware/AutoSleuth-Triage/tests/sample_benign_triage.exe",
+      "file_path": "tests/sample_benign_triage.exe",
       "file_size": 44032,
       "md5": "b21a75f432158ce439e9fa6fd5fde20a",
       "sha1": "aa8d1f86f9246b5ad9d8fc24245023ce17615887",

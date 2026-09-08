@@ -11,11 +11,14 @@ from config import (
     MAX_SAMPLE_SIZE,
     MAX_PCAP_SIZE,
     MAX_PACKETS,
+    MAX_TRACKED_CONNECTIONS,
+    MAX_TIMESTAMPS_PER_CONNECTION,
     MAX_STRINGS,
     MAX_STRING_LENGTH,
     MAX_LOG_ROWS,
     MAX_REPORT_SIZE,
-    ANALYSIS_TIMEOUT
+    ANALYSIS_TIMEOUT,
+    ADAPTER_TIMEOUT
 )
 
 
@@ -25,11 +28,15 @@ class ResourcePolicy:
     max_sample_size: int = MAX_SAMPLE_SIZE
     max_pcap_size: int = MAX_PCAP_SIZE
     max_packets: int = MAX_PACKETS
+    max_tracked_connections: int = MAX_TRACKED_CONNECTIONS
+    max_timestamps_per_connection: int = MAX_TIMESTAMPS_PER_CONNECTION
     max_strings: int = MAX_STRINGS
     max_string_length: int = MAX_STRING_LENGTH
     max_log_rows: int = MAX_LOG_ROWS
     max_report_size: int = MAX_REPORT_SIZE
     analysis_timeout: int = ANALYSIS_TIMEOUT
+    adapter_timeout: int = ADAPTER_TIMEOUT
+
 
     def check_file_size(self, file_path: Path, max_bytes: int, file_label: str = "File") -> Tuple[bool, Optional[str]]:
         """Checks if file size is within policy. Returns (is_ok, error_or_warning_message)."""

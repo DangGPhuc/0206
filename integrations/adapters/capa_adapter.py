@@ -3,13 +3,14 @@
 Executes capability detection via Mandiant capa if installed.
 """
 from pathlib import Path
-from typing import List, Optional
+from typing import List, Optional, Tuple
 import shutil
-import subprocess
 import json
 
 from core.evidence import EvidenceStore, EvidenceRecord, EvidenceState
-from integrations.base import AnalyzerAdapter
+from core.process_guard import safe_run_process
+from integrations.base import AnalyzerAdapter, AdapterStatus
+
 
 
 class CapaAdapter(AnalyzerAdapter):
@@ -25,7 +26,15 @@ class CapaAdapter(AnalyzerAdapter):
     def available(self) -> bool:
         return self._cli_path is not None
 
-    def analyze(self, input_artifact: Path, evidence_store: Optional[EvidenceStore] = None) -> List[EvidenceRecord]:
+    def check_functional(self) -> Tuple[AdapterStatus, str]:
+        if not self.available():
+            return AdapterStatus.NOT_INSTALLED, "Mandiant capa is not installed in PATH."
+        res = safe_run_process([self._cli_path, "--version"], timeout_sec=10)
+        if res.exit_code == 0:
+            return AdapterStatus.FUNCTIONAL, f"capa is functional ({res.stdout.strip()})"
+        return AdapterStatus.READY, f"capa binary detected at {self._cli_path}"
+
+    def analyze(self, input_artifact: Path, evidence_store: Optional[EvidenceStore] = None, **kwargs) -> List[EvidenceRecord]:
         records: List[EvidenceRecord] = []
         p = Path(input_artifact)
         store = evidence_store if evidence_store is not None else EvidenceStore()
@@ -39,11 +48,10 @@ class CapaAdapter(AnalyzerAdapter):
             return records
 
         try:
-            # Run capa in JSON mode with strict timeout
-            cmd = [self._cli_path, "-j", str(p)]
-            proc = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
-            if proc.returncode == 0:
-                data = json.loads(proc.stdout)
+            # Run capa in JSON mode via safe_run_process (no shell, clean env)
+            res = safe_run_process([self._cli_path, "-j", str(p)], timeout_sec=60)
+            if res.exit_code == 0 and res.stdout:
+                data = json.loads(res.stdout)
                 rules = data.get("rules", {})
                 for rule_name, rule_data in rules.items():
                     scope = rule_data.get("meta", {}).get("scope", "function")
@@ -55,7 +63,7 @@ class CapaAdapter(AnalyzerAdapter):
                     records.append(rec)
             else:
                 rec = store.create(
-                    p.name, "CAPA", "status", f"Capa completed with code {proc.returncode}",
+                    p.name, "CAPA", "status", f"Capa completed with code {res.exit_code}: {res.stderr[:200] if res.stderr else 'no output'}",
                     extractor=self.name, state=EvidenceState.NOT_CONFIRMED
                 )
                 records.append(rec)
@@ -67,3 +75,4 @@ class CapaAdapter(AnalyzerAdapter):
             records.append(rec)
 
         return records
+

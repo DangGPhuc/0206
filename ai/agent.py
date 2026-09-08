@@ -1,14 +1,17 @@
 """
 0206 - Grounded AI Threat Synthesizer Module
 Enforces:
-1. Privacy redaction BEFORE any remote transmission.
-2. Evidence citation validation (rejects ungrounded assertions).
-3. Deterministic offline fallback using FindingEngine.
+1. AI is strictly non-authoritative: cannot override threat score, threat level, or invent IOCs.
+2. Mandatory privacy redaction BEFORE any remote transmission.
+3. Strict evidence citation validation via AIValidationResult (ACCEPTED, DOWNGRADED, REJECTED).
+4. Deterministic offline fallback using FindingEngine.
 """
+from enum import Enum
 import os
 import json
 import re
 from typing import Dict, Any, Optional, List
+from pydantic import BaseModel, Field
 
 from core.evidence import EvidenceStore
 from core.findings import Finding, FindingEngine, Assessment
@@ -16,8 +19,33 @@ from core.privacy import PrivacyRedactor, PrivacyMode
 from ai.prompts import GROUNDED_SYSTEM_PROMPT, GROUNDED_USER_PROMPT_TEMPLATE
 
 
+class AIFieldStatus(str, Enum):
+    ACCEPTED = "ACCEPTED"
+    DOWNGRADED = "DOWNGRADED"
+    REJECTED = "REJECTED"
+
+
+class AIValidationDecision(BaseModel):
+    field: str
+    status: AIFieldStatus
+    reason: str
+    original_value: Any = None
+    resolved_value: Any = None
+
+
+class AIValidationResult(BaseModel):
+    """Audit record evaluating AI proposals against ground truth evidence."""
+    decisions: List[AIValidationDecision] = Field(default_factory=list)
+    decisions_by_field: Dict[str, Dict[str, Any]] = Field(default_factory=dict)
+    rejected_fields: List[str] = Field(default_factory=list)
+    downgraded_fields: List[str] = Field(default_factory=list)
+    accepted_fields: List[str] = Field(default_factory=list)
+    validated_hypotheses: List[Dict[str, Any]] = Field(default_factory=list)
+
+
+
 class LLMThreatSynthesizer:
-    """Orchestrates AI enrichment with strict evidence grounding and privacy guards."""
+    """Orchestrates AI enrichment with strict evidence grounding and validation boundaries."""
 
     def __init__(
         self,
@@ -45,9 +73,10 @@ class LLMThreatSynthesizer:
     def synthesize(
         self,
         evidence_store: Any,
-        findings: Optional[List[Finding]] = None
+        findings: Optional[List[Finding]] = None,
+        base_assessment: Optional[Assessment] = None
     ) -> Assessment:
-        """Enriches deterministic findings with LLM reasoning if configured."""
+        """Enriches deterministic findings with validated LLM hypotheses if configured."""
         if isinstance(evidence_store, dict):
             # Legacy compatibility mode
             dict_data = evidence_store
@@ -64,12 +93,13 @@ class LLMThreatSynthesizer:
         else:
             finding_engine = FindingEngine(evidence_store)
 
-        baseline_assessment = finding_engine.generate_assessment()
+        baseline_assessment = base_assessment if base_assessment is not None else finding_engine.generate_assessment()
+
 
         if self.provider in ("openai", "ollama") and (self.api_key or self.provider == "ollama"):
             try:
                 ai_dict = self._call_llm(evidence_store, findings)
-                return self._merge_and_validate(ai_dict, baseline_assessment, evidence_store)
+                return self._merge_and_validate(ai_dict, baseline_assessment, evidence_store, findings=findings)
             except Exception as e:
                 # Seamless fallback to deterministic assessment
                 baseline_assessment.summary += f" [Note: AI enrichment unavailable ({e}); deterministic assessment utilized]."
@@ -127,39 +157,163 @@ class LLMThreatSynthesizer:
         self,
         ai_dict: Dict[str, Any],
         baseline: Assessment,
-        evidence_store: EvidenceStore
+        evidence_store: EvidenceStore,
+        findings: Optional[List[Finding]] = None
     ) -> Assessment:
         """
-        Validates that AI conclusions reference actual evidence.
-        Prevents hallucinated IOCs by strictly retaining IOCs from evidence_store.
+        Validates AI suggestions against ground truth evidence.
+        AI CANNOT override threat scores, levels, or invent IOCs.
         """
-        # Validate cited MITRE technique evidence IDs
-        validated_mitre = []
-        for t in ai_dict.get("mitre_attack", []):
+        val_result = AIValidationResult()
+
+        def add_decision(field: str, status: AIFieldStatus, reason: str, orig: Any, res: Any):
+            dec = AIValidationDecision(
+                field=field,
+                status=status,
+                reason=reason,
+                original_value=orig,
+                resolved_value=res
+            )
+            val_result.decisions.append(dec)
+            val_result.decisions_by_field[field] = dec.model_dump()
+            if status == AIFieldStatus.REJECTED:
+                val_result.rejected_fields.append(field)
+            elif status == AIFieldStatus.DOWNGRADED:
+                val_result.downgraded_fields.append(field)
+            else:
+                val_result.accepted_fields.append(field)
+
+
+        # 1. Threat score & Threat level: AI is NEVER AUTHORITATIVE!
+        if "threat_score" in ai_dict and ai_dict["threat_score"] != baseline.threat_score:
+            add_decision(
+                "threat_score", AIFieldStatus.REJECTED,
+                "Threat score is authoritative from deterministic FindingEngine; LLM override rejected.",
+                ai_dict["threat_score"], baseline.threat_score
+            )
+        if "threat_level" in ai_dict and ai_dict["threat_level"] != baseline.threat_level:
+            add_decision(
+                "threat_level", AIFieldStatus.REJECTED,
+                "Threat level is authoritative from deterministic FindingEngine; LLM override rejected.",
+                ai_dict["threat_level"], baseline.threat_level
+            )
+
+        # 2. IOCs: AI cannot invent hashes, paths, domains, or IPs
+        for ioc_field in ("host_iocs", "network_iocs", "hashes", "paths", "domains", "ips", "ioc_values"):
+            if ioc_field in ai_dict:
+                add_decision(
+                    ioc_field, AIFieldStatus.REJECTED,
+                    f"IOC field '{ioc_field}' cannot be authored by AI; strictly derived from EvidenceStore facts.",
+                    ai_dict.get(ioc_field), getattr(baseline, ioc_field, None)
+                )
+
+        # 2b. High-impact behavioral claims (C2 confirmation, process injection confirmation, persistence claims)
+        if "c2_confirmation" in ai_dict:
+            has_c2_fact = any("CONFIRMED_C2" in f.title for f in findings or [])
+            if not has_c2_fact:
+                add_decision(
+                    "c2_confirmation", AIFieldStatus.REJECTED,
+                    "AI C2 confirmation rejected; multi-source corroboration required for confirmed C2.",
+                    ai_dict.get("c2_confirmation"), False
+                )
+            else:
+                add_decision(
+                    "c2_confirmation", AIFieldStatus.ACCEPTED,
+                    "C2 confirmation grounded in verified multi-source evidence.",
+                    ai_dict.get("c2_confirmation"), True
+                )
+
+        if "process_injection_confirmation" in ai_dict:
+            add_decision(
+                "process_injection_confirmation", AIFieldStatus.DOWNGRADED,
+                "Process injection confirmation downgraded; static API imports establish potential capability only, not confirmed execution.",
+                ai_dict.get("process_injection_confirmation"), "CAPABILITY_UNCONFIRMED_RUNTIME"
+            )
+
+        if "persistence_claims" in ai_dict:
+            has_pers = any(f.category == FindingCategory.PERSISTENCE for f in findings or [])
+            if not has_pers:
+                add_decision(
+                    "persistence_claims", AIFieldStatus.REJECTED,
+                    "Persistence claim rejected; no autostart registry or service evidence found in EvidenceStore.",
+                    ai_dict.get("persistence_claims"), None
+                )
+            else:
+                add_decision(
+                    "persistence_claims", AIFieldStatus.ACCEPTED,
+                    "Persistence claim corroborated by host telemetry evidence.",
+                    ai_dict.get("persistence_claims"), baseline.persistence_assessment
+                )
+
+        # 3. Malware family claim: DOWNGRADE to unconfirmed hypothesis
+        resolved_classification = baseline.classification
+        ai_family = ai_dict.get("malware_family") or ai_dict.get("classification")
+        if ai_family and ai_family.lower() not in (baseline.classification.lower(), "unknown", "generic"):
+            add_decision(
+                "malware_family", AIFieldStatus.DOWNGRADED,
+                "Unverified malware family claim downgraded to heuristic hypothesis.",
+                ai_family, f"{baseline.classification} (Hypothesis: {ai_family}) [UNCONFIRMED]"
+            )
+
+            resolved_classification = f"{baseline.classification} (Hypothesis: {ai_family}) [UNCONFIRMED]"
+            val_result.validated_hypotheses.append({
+                "type": "malware_family",
+                "hypothesis": ai_family,
+                "status": "UNCONFIRMED_HYPOTHESIS"
+            })
+        else:
+            add_decision(
+                "malware_family", AIFieldStatus.ACCEPTED,
+                "Baseline classification preserved.",
+                ai_family, baseline.classification
+            )
+
+        # 4. MITRE ATT&CK: Validate cited evidence IDs
+        validated_mitre = list(baseline.mitre_techniques)
+        mitre_entries = ai_dict.get("mitre_attack") or ai_dict.get("mitre_techniques") or []
+        for t in mitre_entries:
             eids = t.get("evidence_ids", [])
+
             valid_eids = [eid for eid in eids if evidence_store.get(eid)]
             if valid_eids:
                 t["evidence_ids"] = valid_eids
                 validated_mitre.append(t)
+                add_decision(
+                    f"mitre_technique_{t.get('technique_id')}", AIFieldStatus.ACCEPTED,
+                    f"Technique cited verified evidence IDs: {valid_eids}",
+                    eids, valid_eids
+                )
+            else:
+                add_decision(
+                    f"mitre_technique_{t.get('technique_id', 'unknown')}", AIFieldStatus.REJECTED,
+                    "Technique rejected because it cited non-existent or ungrounded evidence IDs.",
+                    eids, None
+                )
 
-        # Retain baseline IOCs (LLM cannot invent hashes or IPs!)
-        threat_score = ai_dict.get("threat_score", baseline.threat_score)
-        threat_level = ai_dict.get("threat_level", baseline.threat_level)
+        # 5. Narrative summaries & Recommendations
+        exec_summary = ai_dict.get("executive_summary") or baseline.summary
+        add_decision("executive_summary", AIFieldStatus.ACCEPTED, "Grounded executive narrative accepted.", None, None)
+
+        recommendations = ai_dict.get("incident_recommendations") or baseline.recommendations
+        add_decision("recommendations", AIFieldStatus.ACCEPTED, "Advisory response recommendations accepted.", None, None)
 
         return Assessment(
             assessment_id=baseline.assessment_id,
-            title=f"AI-Enriched Triage Assessment: {ai_dict.get('malware_family', baseline.classification)}",
-            threat_level=threat_level,
-            threat_score=threat_score,
-            classification=ai_dict.get("malware_family", baseline.classification),
-            summary=ai_dict.get("executive_summary", baseline.summary),
+            title=f"Triage Assessment: {resolved_classification}",
+            threat_level=baseline.threat_level,    # Deterministic authority preserved
+            threat_score=baseline.threat_score,    # Deterministic authority preserved
+            classification=resolved_classification,
+            classification_details=baseline.classification_details,
+            score_breakdown=baseline.score_breakdown,
+            summary=exec_summary,
             key_functionality=ai_dict.get("key_functionality", baseline.key_functionality),
             purpose=ai_dict.get("purpose", baseline.purpose),
-            persistence_assessment=ai_dict.get("persistence", baseline.persistence_assessment),
+            persistence_assessment=baseline.persistence_assessment,
             runtime_confirmation_status=baseline.runtime_confirmation_status,
-            mitre_techniques=validated_mitre if validated_mitre else baseline.mitre_techniques,
-            host_iocs=baseline.host_iocs,       # Grounded strictly in evidence store
-            network_iocs=baseline.network_iocs, # Grounded strictly in evidence store
-            recommendations=ai_dict.get("incident_recommendations", baseline.recommendations),
-            supporting_finding_ids=baseline.supporting_finding_ids
+            mitre_techniques=validated_mitre,
+            host_iocs=baseline.host_iocs,
+            network_iocs=baseline.network_iocs,
+            recommendations=recommendations,
+            supporting_finding_ids=baseline.supporting_finding_ids,
+            ai_validation=val_result.model_dump()
         )

@@ -16,11 +16,15 @@ ENGINE_VERSION = "2.0.0"
 MAX_SAMPLE_SIZE = 100 * 1024 * 1024   # 100 MB
 MAX_PCAP_SIZE = 250 * 1024 * 1024     # 250 MB
 MAX_PACKETS = 50_000                  # Maximum packets processed per PCAP
+MAX_TRACKED_CONNECTIONS = 5_000       # Maximum network conversation flows tracked in memory
+MAX_TIMESTAMPS_PER_CONNECTION = 1_000 # Maximum timestamp samples retained per flow
 MAX_STRINGS = 10_000                  # Maximum extracted strings
 MAX_STRING_LENGTH = 1024              # Maximum individual string length
 MAX_LOG_ROWS = 50_000                 # Maximum rows processed from Procmon CSV
 MAX_REPORT_SIZE = 50 * 1024 * 1024    # 50 MB
 ANALYSIS_TIMEOUT = 300                # 5 minutes default timeout
+ADAPTER_TIMEOUT = 120                 # 2 minutes default adapter timeout
+
 
 # Static Analysis Thresholds
 ENTROPY_PACKED_THRESHOLD = 7.0  # Shannon entropy >= 7.0 contributes to packing score

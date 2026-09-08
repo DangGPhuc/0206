@@ -66,76 +66,26 @@ class CapabilityRegistry:
             capabilities[display_name] = {
                 "tier": "Tier 1 (Core)",
                 "status": "AVAILABLE" if info["installed"] else "MISSING",
-                "version": info["version"]
+                "version": info["version"],
+                "installed": info["installed"],
+                "capabilities": ["Core Triaging", "PE Parsing", "Disassembly", "Network Streaming"]
             }
 
-        # ---------------- Tier 2: Open-source Optional ----------------
-        yara_py = check_python_package("yara")
-        yara_cli = check_executable("yara", EXTERNAL_TOOLS.get("yara", ""))
-        yara_status = "AVAILABLE" if (yara_py["installed"] or yara_cli["available"]) else "NOT_INSTALLED"
-        capabilities["YARA"] = {
-            "tier": "Tier 2 (Open Source)",
-            "status": yara_status,
-            "version": yara_py["version"] if yara_py["installed"] else ("CLI" if yara_cli["available"] else "unavailable")
-        }
+        # ---------------- Tier 2 & 3: Adapters from ADAPTER_REGISTRY ----------------
+        from integrations.adapters import ADAPTER_REGISTRY
 
-        ghidra_info = check_executable("ghidra", EXTERNAL_TOOLS.get("ghidra", ""))
-        capabilities["Ghidra"] = {
-            "tier": "Tier 2 (Open Source)",
-            "status": ghidra_info["status"],
-            "path": ghidra_info["path"]
-        }
-
-        r2_info = check_executable("radare2")
-        capabilities["radare2"] = {
-            "tier": "Tier 2 (Open Source)",
-            "status": r2_info["status"],
-            "path": r2_info["path"]
-        }
-
-        capa_info = check_executable("capa")
-        capabilities["capa"] = {
-            "tier": "Tier 2 (Open Source)",
-            "status": capa_info["status"],
-            "path": capa_info["path"]
-        }
-
-        pesieve_info = check_executable("pe-sieve", EXTERNAL_TOOLS.get("pesieve", ""))
-        capabilities["pe-sieve"] = {
-            "tier": "Tier 2 (Open Source)",
-            "status": pesieve_info["status"],
-            "path": pesieve_info["path"]
-        }
-
-        floss_info = check_executable("floss")
-        capabilities["FLOSS"] = {
-            "tier": "Tier 2 (Open Source)",
-            "status": floss_info["status"],
-            "path": floss_info["path"]
-        }
-
-        # ---------------- Tier 3: Proprietary Optional ----------------
-        ida_info = check_executable("ida64", EXTERNAL_TOOLS.get("ida", ""))
-        if not ida_info["available"]:
-            ida_info = check_executable("idat", EXTERNAL_TOOLS.get("ida", ""))
-        capabilities["IDA Pro"] = {
-            "tier": "Tier 3 (Proprietary)",
-            "status": ida_info["status"],
-            "path": ida_info["path"]
-        }
-
-        x64dbg_info = check_executable("x64dbg", EXTERNAL_TOOLS.get("x64dbg", ""))
-        capabilities["x64dbg"] = {
-            "tier": "Tier 3 (Proprietary)",
-            "status": x64dbg_info["status"],
-            "path": x64dbg_info["path"]
-        }
-
-        windbg_info = check_executable("windbg")
-        capabilities["WinDbg"] = {
-            "tier": "Tier 3 (Proprietary)",
-            "status": windbg_info["status"],
-            "path": windbg_info["path"]
-        }
+        for name, adapter_cls in ADAPTER_REGISTRY.items():
+            adapter = adapter_cls()
+            status, reason = adapter.check_functional()
+            status_val = status.value if hasattr(status, "value") else str(status)
+            capabilities[name] = {
+                "tier": adapter.tier,
+                "status": status_val,
+                "version": adapter.version,
+                "capabilities": adapter.capabilities,
+                "details": reason,
+                "installed": adapter.available()
+            }
 
         return capabilities
+

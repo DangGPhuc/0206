@@ -1,15 +1,7 @@
 """
-0206 - Base Report Adapter Interface
+0206 - Base Report Adapter (Shim)
+Canonical implementation in reporting.adapters.base.
 """
-from abc import ABC, abstractmethod
-from pathlib import Path
-from typing import Dict, Any
+from reporting.adapters.base import BaseReportAdapter
 
-
-class BaseReportAdapter(ABC):
-    """Abstract interface for all report rendering adapters."""
-
-    @abstractmethod
-    def render(self, session_data: Dict[str, Any], output_path: Path) -> Path:
-        """Renders canonical session findings into target format."""
-        pass
+__all__ = ["BaseReportAdapter"]

@@ -5,13 +5,13 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "0206"
 version = "2.0.0"
-description = "Modular, Evidence-Grounded Malware Triage & Analysis Platform"
+description = "Independent, Local-First, Evidence-Driven Malware Analysis & Reporting Platform"
 readme = "README.md"
 authors = [
     { name = "DangGPhuc" }
 ]
 requires-python = ">=3.10"
-license = { text = "MIT" }
+license = "MIT"
 classifiers = [
     "Development Status :: 4 - Beta",
     "Intended Audience :: Information Technology",
@@ -38,18 +38,25 @@ dependencies = [
 yara = [
     "yara-python>=4.3.0"
 ]
+capa = [
+    "flare-capa>=7.0.0"
+]
+all-open-source = [
+    "yara-python>=4.3.0",
+    "flare-capa>=7.0.0"
+]
 dev = [
     "pytest>=7.0.0",
     "flake8>=6.0.0"
 ]
-all-open-source = [
-    "yara-python>=4.3.0",
-    "capa>=7.0.0"
-]
 
 [project.scripts]
-0206 = "main:main"
+0206 = "cli.main:main"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["*"]
+exclude = ["tests*", "output*"]
 
 [tool.setuptools]
-packages = ["core", "analyzer", "ai", "integrations", "integrations.adapters", "report", "report.adapters", "reporter", "scripts"]
 py-modules = ["main", "config"]
