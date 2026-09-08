@@ -1,234 +1,393 @@
 """
-Behavioral Artifact Ingestion Module
-Ingests and normalizes dynamic malware telemetry:
-- Network PCAP traces (DNS, HTTP, TLS SNI, C2 Beacons via Scapy)
-- Process Monitor (Procmon) CSV logs
-- Regshot Registry diffs
+0206 - Behavioral Artifact Ingestion Module
+Safely parses dynamic analysis artifacts using streaming readers:
+- Network PCAP traces (Streaming Scapy PcapReader with memory bounds)
+- Multi-factor composite Beacon Scoring (periodicity, jitter, packet size variance)
+- Process Monitor (Procmon) CSV normalized event streaming
+- Regshot diff parser
 """
 import csv
 import re
+import math
+import statistics
 from pathlib import Path
 from typing import Dict, List, Any, Optional
-from scapy.all import rdpcap, DNS, DNSQR, DNSRR, IP, TCP, UDP, Raw
+from scapy.all import PcapReader, DNS, DNSQR, DNSRR, IP, TCP, UDP, Raw
+
+from config import (
+    MAX_PCAP_SIZE, MAX_PACKETS, MAX_LOG_ROWS,
+    BEACON_WEIGHTS
+)
+from core.evidence import EvidenceStore, EvidenceState
 
 
 class BehavioralAnalyzer:
-    """Ingests behavioral traces from sandbox runs or monitoring tools."""
+    """Ingests behavioral traces from sandbox runs or host/network monitors."""
 
     def __init__(
         self, 
         pcap_path: Optional[Path] = None, 
         procmon_path: Optional[Path] = None,
-        regshot_path: Optional[Path] = None
+        regshot_path: Optional[Path] = None,
+        evidence_store: Optional[EvidenceStore] = None
     ):
         self.pcap_path = Path(pcap_path) if pcap_path else None
         self.procmon_path = Path(procmon_path) if procmon_path else None
         self.regshot_path = Path(regshot_path) if regshot_path else None
+        self.evidence_store = evidence_store if evidence_store is not None else EvidenceStore()
         self.errors: List[str] = []
+        self.warnings: List[str] = []
 
     def parse_pcap(self) -> Dict[str, Any]:
-        """Parses network PCAP file to extract DNS, HTTP, TLS SNI, and remote connections."""
+        """
+        Parses network PCAP file in a memory-safe streaming fashion.
+        Calculates multi-factor beacon scores and extracts DNS, HTTP, and TLS SNI.
+        """
         results: Dict[str, Any] = {
+            "status": "NOT_ANALYZED",
+            "packet_count": 0,
+            "analysis_limit_reached": False,
             "dns_queries": [],
             "http_requests": [],
             "tls_sni": [],
             "remote_ips": [],
             "c2_beacons": [],
-            "packet_count": 0
+            "warnings": []
         }
 
         if not self.pcap_path or not self.pcap_path.exists():
             return results
 
-        try:
-            packets = rdpcap(str(self.pcap_path))
-            results["packet_count"] = len(packets)
-        except Exception as e:
-            self.errors.append(f"Failed to read PCAP ({self.pcap_path.name}): {e}")
+        file_size = self.pcap_path.stat().st_size
+        if file_size > MAX_PCAP_SIZE:
+            msg = f"PCAP size {file_size:,} bytes exceeds safety limit {MAX_PCAP_SIZE:,} bytes. Skipping."
+            self.warnings.append(msg)
+            results["warnings"].append(msg)
             return results
 
+        artifact_name = self.pcap_path.name
+        results["status"] = "OBSERVED"
+
+        # Conversation tracking: {(dst_ip, dst_port): {"timestamps": [], "payload_sizes": []}}
+        conversations: Dict[tuple, Dict[str, list]] = {}
         dns_map: Dict[str, List[str]] = {}
         http_requests: List[Dict[str, str]] = []
         tls_sni_list: List[str] = []
-        ip_connections: Dict[str, int] = {}
+        ip_counts: Dict[str, int] = {}
 
-        # Regex for HTTP Request
         http_re = re.compile(rb'^(GET|POST|HEAD|PUT|DELETE|CONNECT)\s+([^\s]+)\s+HTTP/1\.[01]', re.IGNORECASE)
         host_re = re.compile(rb'(?i)Host:\s*([^\r\n]+)')
         ua_re = re.compile(rb'(?i)User-Agent:\s*([^\r\n]+)')
 
-        for pkt in packets:
-            # Track IP conversations
-            if IP in pkt:
-                src_ip = pkt[IP].src
-                dst_ip = pkt[IP].dst
-                # Exclude local/broadcast
-                if not dst_ip.startswith(("127.", "255.", "224.")):
-                    ip_connections[dst_ip] = ip_connections.get(dst_ip, 0) + 1
+        packet_idx = 0
+        try:
+            with PcapReader(str(self.pcap_path)) as pcap_reader:
+                for pkt in pcap_reader:
+                    packet_idx += 1
+                    if packet_idx > MAX_PACKETS:
+                        results["analysis_limit_reached"] = True
+                        self.warnings.append(f"Reached maximum packet analysis limit ({MAX_PACKETS}). Stopping streaming parse.")
+                        break
 
-            # DNS Query & Response
-            if pkt.haslayer(DNS):
-                dns = pkt[DNS]
-                if dns.qr == 0 and dns.qd:  # Query
-                    qd_first = dns.qd[0] if isinstance(dns.qd, list) or hasattr(dns.qd, '__getitem__') else dns.qd
-                    qname = qd_first.qname.decode('utf-8', errors='ignore').rstrip('.') if hasattr(qd_first, 'qname') else ""
-                    if qname and qname not in dns_map:
-                        dns_map[qname] = []
-                elif dns.qr == 1 and dns.an:  # Answer
-                    qd_first = dns.qd[0] if (isinstance(dns.qd, list) or hasattr(dns.qd, '__getitem__')) and len(dns.qd) > 0 else dns.qd
-                    qname = qd_first.qname.decode('utf-8', errors='ignore').rstrip('.') if hasattr(qd_first, 'qname') else ""
-                    if qname:
-                        if qname not in dns_map:
-                            dns_map[qname] = []
-                        for i in range(len(dns.an)):
-                            an = dns.an[i]
-                            if hasattr(an, 'type') and an.type == 1:  # A record (IPv4)
-                                rdata = an.rdata
-                                if isinstance(rdata, str) and rdata not in dns_map[qname]:
-                                    dns_map[qname].append(rdata)
+                    # Timestamp
+                    pkt_time = float(pkt.time)
 
-            # HTTP Payload inspection
-            if pkt.haslayer(TCP) and pkt.haslayer(Raw):
-                payload = pkt[Raw].load
-                m = http_re.match(payload)
-                if m:
-                    method = m.group(1).decode('ascii', errors='ignore')
-                    uri = m.group(2).decode('ascii', errors='ignore')
-                    host_m = host_re.search(payload)
-                    ua_m = ua_re.search(payload)
-                    host = host_m.group(1).decode('ascii', errors='ignore') if host_m else ""
-                    user_agent = ua_m.group(1).decode('ascii', errors='ignore') if ua_m else ""
+                    # IP conversation tracking
+                    if IP in pkt:
+                        dst_ip = pkt[IP].dst
+                        dport = pkt[TCP].dport if TCP in pkt else (pkt[UDP].dport if UDP in pkt else 0)
+                        
+                        # Filter out local loopback/multicast
+                        if not dst_ip.startswith(("127.", "255.", "224.", "0.")):
+                            ip_counts[dst_ip] = ip_counts.get(dst_ip, 0) + 1
+                            key = (dst_ip, dport)
+                            if key not in conversations:
+                                conversations[key] = {"timestamps": [], "payload_sizes": []}
+                            conversations[key]["timestamps"].append(pkt_time)
+                            
+                            payload_len = len(pkt[Raw].load) if pkt.haslayer(Raw) else 0
+                            conversations[key]["payload_sizes"].append(payload_len)
 
-                    req_entry = {
-                        "method": method,
-                        "uri": uri,
-                        "host": host,
-                        "user_agent": user_agent,
-                        "dst_ip": pkt[IP].dst if IP in pkt else ""
-                    }
-                    if req_entry not in http_requests:
-                        http_requests.append(req_entry)
+                    # DNS Inspection
+                    if pkt.haslayer(DNS):
+                        dns = pkt[DNS]
+                        if dns.qr == 0 and dns.qd:  # Query
+                            qd_first = dns.qd[0] if isinstance(dns.qd, list) or hasattr(dns.qd, '__getitem__') else dns.qd
+                            qname = qd_first.qname.decode('utf-8', errors='ignore').rstrip('.') if hasattr(qd_first, 'qname') else ""
+                            if qname and qname not in dns_map:
+                                dns_map[qname] = []
+                        elif dns.qr == 1 and dns.an:  # Answer
+                            qd_first = dns.qd[0] if (isinstance(dns.qd, list) or hasattr(dns.qd, '__getitem__')) and len(dns.qd) > 0 else dns.qd
+                            qname = qd_first.qname.decode('utf-8', errors='ignore').rstrip('.') if hasattr(qd_first, 'qname') else ""
+                            if qname:
+                                if qname not in dns_map:
+                                    dns_map[qname] = []
+                                for i in range(len(dns.an)):
+                                    an = dns.an[i]
+                                    if hasattr(an, 'type') and an.type == 1:  # A record
+                                        rdata = an.rdata
+                                        if isinstance(rdata, str) and rdata not in dns_map[qname]:
+                                            dns_map[qname].append(rdata)
 
-                # TLS SNI extraction (Client Hello)
-                # Content type 22 (Handshake), Handshake type 1 (Client Hello)
-                if len(payload) > 5 and payload[0] == 0x16 and payload[5] == 0x01:
-                    try:
-                        # Extract server name indication extension (type 0x0000)
-                        pos = payload.find(b'\x00\x00')
-                        if pos != -1 and pos + 9 < len(payload):
-                            ext_len = int.from_bytes(payload[pos+7:pos+9], 'big')
-                            sni = payload[pos+9:pos+9+ext_len].decode('utf-8', errors='ignore')
-                            if sni and "." in sni and sni not in tls_sni_list:
-                                tls_sni_list.append(sni)
-                    except Exception:
-                        pass
+                    # HTTP & TLS SNI
+                    if pkt.haslayer(TCP) and pkt.haslayer(Raw):
+                        payload = pkt[Raw].load
+                        m = http_re.match(payload)
+                        if m:
+                            method = m.group(1).decode('ascii', errors='ignore')
+                            uri = m.group(2).decode('ascii', errors='ignore')
+                            host_m = host_re.search(payload)
+                            ua_m = ua_re.search(payload)
+                            host = host_m.group(1).decode('ascii', errors='ignore').strip() if host_m else ""
+                            user_agent = ua_m.group(1).decode('ascii', errors='ignore').strip() if ua_m else ""
 
-        # Format DNS output
-        for query, ips in dns_map.items():
-            results["dns_queries"].append({
-                "domain": query,
-                "resolved_ips": ips
-            })
+                            req_item = {
+                                "method": method,
+                                "uri": uri,
+                                "host": host,
+                                "user_agent": user_agent,
+                                "dst_ip": pkt[IP].dst if IP in pkt else ""
+                            }
+                            if req_item not in http_requests:
+                                http_requests.append(req_item)
+                                self.evidence_store.create(
+                                    artifact_name, "PCAP_HTTP", "http_request", req_item,
+                                    "BehavioralAnalyzer", provenance={"packet_index": packet_idx}
+                                )
 
-        results["http_requests"] = http_requests[:25]
-        results["tls_sni"] = tls_sni_list[:25]
-        results["remote_ips"] = [{"ip": ip, "count": count} for ip, count in sorted(ip_connections.items(), key=lambda x: x[1], reverse=True)[:30]]
+                        # TLS SNI
+                        if len(payload) > 5 and payload[0] == 0x16 and payload[5] == 0x01:
+                            try:
+                                pos = payload.find(b'\x00\x00')
+                                if pos != -1 and pos + 9 < len(payload):
+                                    ext_len = int.from_bytes(payload[pos+7:pos+9], 'big')
+                                    sni = payload[pos+9:pos+9+ext_len].decode('utf-8', errors='ignore')
+                                    if sni and "." in sni and sni not in tls_sni_list:
+                                        tls_sni_list.append(sni)
+                                        self.evidence_store.create(
+                                            artifact_name, "PCAP_TLS", "tls_sni", sni,
+                                            "BehavioralAnalyzer", provenance={"packet_index": packet_idx}
+                                        )
+                            except Exception:
+                                pass
 
-        # Heuristic C2 Beacons
-        for item in results["remote_ips"]:
-            if item["count"] >= 5:
-                results["c2_beacons"].append({
-                    "target_ip": item["ip"],
-                    "packet_count": item["count"],
-                    "threat": "High activity / potential persistent C2 beacon"
-                })
+        except Exception as e:
+            self.errors.append(f"Error reading PCAP streaming packets: {e}")
 
+        results["packet_count"] = packet_idx
+
+        # Format DNS results & register evidence
+        for domain, ips in dns_map.items():
+            dns_entry = {"domain": domain, "resolved_ips": ips}
+            results["dns_queries"].append(dns_entry)
+            self.evidence_store.create(
+                artifact_name, "PCAP_DNS", "dns_query", dns_entry, "BehavioralAnalyzer"
+            )
+
+        results["http_requests"] = http_requests[:30]
+        results["tls_sni"] = tls_sni_list[:30]
+        results["remote_ips"] = [
+            {"ip": ip, "count": cnt} 
+            for ip, cnt in sorted(ip_counts.items(), key=lambda x: x[1], reverse=True)[:30]
+        ]
+
+        # -------------------------------------------------------------
+        # Multi-factor Composite Beacon Detection
+        # -------------------------------------------------------------
+        total_packets = max(1, packet_idx)
+        beacons = []
+
+        for (dst_ip, dst_port), data in conversations.items():
+            tstamps = sorted(data["timestamps"])
+            pkt_count = len(tstamps)
+
+            # Need at least 3 intervals (4 packets) to analyze periodicity
+            if pkt_count < 4:
+                continue
+
+            intervals = [tstamps[i+1] - tstamps[i] for i in range(len(tstamps)-1)]
+            duration = tstamps[-1] - tstamps[0]
+            avg_int = statistics.mean(intervals)
+            median_int = statistics.median(intervals)
+            std_dev = statistics.stdev(intervals) if len(intervals) > 1 else 0.0
+            jitter_ratio = (std_dev / avg_int) if avg_int > 0 else 1.0
+
+            # 1. Periodicity Score (Low jitter -> high score)
+            # If jitter_ratio < 0.1, periodicity score ~ 1.0; if jitter > 0.8, score ~ 0.1
+            periodicity_score = max(0.0, min(1.0, 1.0 - (jitter_ratio / 0.8)))
+
+            # 2. Destination Consistency Score
+            destination_consistency_score = min(1.0, (pkt_count / total_packets) * 2.5)
+
+            # 3. Interval Stability Score (median vs mean alignment)
+            int_diff = abs(avg_int - median_int)
+            stability_score = max(0.0, min(1.0, 1.0 - (int_diff / (avg_int + 0.001))))
+
+            # 4. Packet Size Similarity Score
+            sizes = data["payload_sizes"]
+            size_std = statistics.stdev(sizes) if len(sizes) > 1 else 0.0
+            size_mean = statistics.mean(sizes) if sizes else 0.0
+            size_score = max(0.0, min(1.0, 1.0 - (size_std / (size_mean + 1.0))))
+
+            # 5. Duration Score (Beacons persist over time)
+            duration_score = min(1.0, duration / 60.0)
+
+            # Weighted Composite Score
+            beacon_score = (
+                periodicity_score * BEACON_WEIGHTS["periodicity"] +
+                destination_consistency_score * BEACON_WEIGHTS["destination_consistency"] +
+                stability_score * BEACON_WEIGHTS["interval_stability"] +
+                size_score * BEACON_WEIGHTS["packet_size_similarity"] +
+                duration_score * BEACON_WEIGHTS["duration"]
+            )
+            beacon_score = round(beacon_score, 4)
+
+            # Classify
+            if beacon_score >= 0.80:
+                cls = "HIGH_CONFIDENCE_BEACON"
+            elif beacon_score >= 0.60:
+                cls = "LIKELY_BEACON"
+            elif beacon_score >= 0.30:
+                cls = "SUSPICIOUS"
+            else:
+                cls = "NORMAL"
+
+            candidate = {
+                "destination_ip": dst_ip,
+                "destination_port": dst_port,
+                "packet_count": pkt_count,
+                "duration_seconds": round(duration, 2),
+                "avg_interval": round(avg_int, 3),
+                "median_interval": round(median_int, 3),
+                "std_dev_interval": round(std_dev, 3),
+                "jitter_ratio": round(jitter_ratio, 3),
+                "min_interval": round(min(intervals), 3),
+                "max_interval": round(max(intervals), 3),
+                "periodicity_score": round(periodicity_score, 3),
+                "beacon_score": beacon_score,
+                "classification": cls
+            }
+
+            if cls != "NORMAL":
+                beacons.append(candidate)
+                self.evidence_store.create(
+                    artifact_name, "PCAP_BEACON", "beacon_analysis", candidate,
+                    "BehavioralAnalyzer", confidence=beacon_score,
+                    provenance={"destination_ip": dst_ip, "port": dst_port}
+                )
+
+        results["c2_beacons"] = sorted(beacons, key=lambda x: x["beacon_score"], reverse=True)
         return results
 
     def parse_procmon_csv(self) -> Dict[str, Any]:
         """
-        Parses Process Monitor CSV export for dropped files, registry persistence,
-        and spawned child processes.
+        Parses Process Monitor CSV in a streaming manner with strict limits.
+        Categorizes events into canonical event types.
         """
         results: Dict[str, Any] = {
+            "status": "NOT_ANALYZED",
             "dropped_files": [],
             "persistence_registry": [],
             "spawned_processes": [],
-            "suspicious_file_ops": []
+            "normalized_events": [],
+            "warnings": []
         }
 
         if not self.procmon_path or not self.procmon_path.exists():
             return results
 
+        artifact_name = self.procmon_path.name
+        results["status"] = "OBSERVED"
+
+        row_count = 0
         try:
             with open(self.procmon_path, "r", encoding="utf-8", errors="ignore") as f:
                 reader = csv.DictReader(f)
                 for row in reader:
-                    # Procmon standard column names (case insensitive matching)
-                    clean_row = {k.strip(): (v.strip() if v else "") for k, v in row.items() if k}
-                    
-                    operation = clean_row.get("Operation", "")
-                    path = clean_row.get("Path", "")
-                    proc_name = clean_row.get("Process Name", "")
-                    detail = clean_row.get("Detail", "")
-                    result = clean_row.get("Result", "")
+                    row_count += 1
+                    if row_count > MAX_LOG_ROWS:
+                        msg = f"Reached max log row processing limit ({MAX_LOG_ROWS})."
+                        self.warnings.append(msg)
+                        results["warnings"].append(msg)
+                        break
 
-                    # 1. Dropped / Created Files
-                    if operation in ("CreateFile", "WriteFile") and result == "SUCCESS":
-                        lower_path = path.lower()
-                        # Detect files dropped in Temp, AppData, Startup, or executable files
-                        if any(ext in lower_path for ext in [".exe", ".dll", ".bat", ".vbs", ".ps1", ".scr"]):
-                            entry = {"process": proc_name, "path": path, "operation": operation}
-                            if entry not in results["dropped_files"]:
-                                results["dropped_files"].append(entry)
-                        elif any(folder in lower_path for folder in ["\\temp\\", "\\appdata\\", "\\startup\\", "\\programdata\\"]):
-                            entry = {"process": proc_name, "path": path, "operation": operation}
-                            if entry not in results["suspicious_file_ops"]:
-                                results["suspicious_file_ops"].append(entry)
+                    clean = {k.strip(): (v.strip() if v else "") for k, v in row.items() if k}
+                    op = clean.get("Operation", "")
+                    path = clean.get("Path", "")
+                    proc = clean.get("Process Name", "")
+                    detail = clean.get("Detail", "")
+                    result = clean.get("Result", "")
+
+                    # Categorize event
+                    event_category = "OTHER"
+                    if op in ("CreateFile", "WriteFile"):
+                        event_category = "FILE_WRITE" if op == "WriteFile" else "FILE_CREATE"
+                    elif op in ("RegSetValue", "RegCreateKey"):
+                        event_category = "REGISTRY_WRITE" if op == "RegSetValue" else "REGISTRY_CREATE"
+                    elif op == "Process Create":
+                        event_category = "PROCESS_CREATE"
+
+                    normalized_evt = {
+                        "event_id": f"EVT-{row_count:05d}",
+                        "category": event_category,
+                        "process": proc,
+                        "operation": op,
+                        "path": path,
+                        "detail": detail,
+                        "result": result
+                    }
+                    results["normalized_events"].append(normalized_evt)
+
+                    # 1. Dropped Files
+                    if op in ("CreateFile", "WriteFile") and result == "SUCCESS":
+                        lower_p = path.lower()
+                        if any(ext in lower_p for ext in [".exe", ".dll", ".bat", ".vbs", ".ps1", ".scr"]):
+                            drop_item = {"process": proc, "path": path, "operation": op}
+                            if drop_item not in results["dropped_files"]:
+                                results["dropped_files"].append(drop_item)
+                                self.evidence_store.create(
+                                    artifact_name, "PROCMON_FILE", "dropped_file", drop_item,
+                                    "BehavioralAnalyzer", provenance={"row_index": row_count}
+                                )
 
                     # 2. Registry Persistence
-                    if operation in ("RegSetValue", "RegCreateKey") and result == "SUCCESS":
-                        lower_path = path.lower()
-                        if any(k in lower_path for k in [
-                            "currentversion\\run", "currentversion\\runonce", 
-                            "services\\", "winlogon", "appinit_dlls", "image file execution options"
+                    if op in ("RegSetValue", "RegCreateKey") and result == "SUCCESS":
+                        lower_p = path.lower()
+                        if any(k in lower_p for k in [
+                            "currentversion\\run", "currentversion\\runonce",
+                            "services\\", "winlogon", "appinit_dlls"
                         ]):
-                            entry = {
-                                "process": proc_name,
-                                "key_path": path,
-                                "operation": operation,
-                                "detail": detail
-                            }
-                            if entry not in results["persistence_registry"]:
-                                results["persistence_registry"].append(entry)
+                            pers_item = {"process": proc, "key_path": path, "operation": op, "detail": detail}
+                            if pers_item not in results["persistence_registry"]:
+                                results["persistence_registry"].append(pers_item)
+                                self.evidence_store.create(
+                                    artifact_name, "PROCMON_REG", "registry_persistence", pers_item,
+                                    "BehavioralAnalyzer", provenance={"row_index": row_count}
+                                )
 
-                    # 3. Process Creation / Execution
-                    if operation == "Process Create" and result == "SUCCESS":
-                        entry = {
-                            "parent_process": proc_name,
-                            "command_line": detail,
-                            "path": path
-                        }
-                        if entry not in results["spawned_processes"]:
-                            results["spawned_processes"].append(entry)
+                    # 3. Spawned Processes
+                    if op == "Process Create" and result == "SUCCESS":
+                        proc_item = {"parent_process": proc, "command_line": detail, "path": path}
+                        if proc_item not in results["spawned_processes"]:
+                            results["spawned_processes"].append(proc_item)
+                            self.evidence_store.create(
+                                artifact_name, "PROCMON_PROC", "spawned_process", proc_item,
+                                "BehavioralAnalyzer", provenance={"row_index": row_count}
+                            )
 
         except Exception as e:
-            self.errors.append(f"Failed to parse Procmon CSV ({self.procmon_path.name}): {e}")
+            self.errors.append(f"Error parsing Procmon CSV: {e}")
 
-        # Limit entries for report readability
+        # Trim output sizes
+        results["normalized_events"] = results["normalized_events"][:100]
         results["dropped_files"] = results["dropped_files"][:30]
         results["persistence_registry"] = results["persistence_registry"][:30]
         results["spawned_processes"] = results["spawned_processes"][:20]
-        results["suspicious_file_ops"] = results["suspicious_file_ops"][:20]
         return results
 
     def parse_regshot(self) -> Dict[str, List[str]]:
-        """Parses Regshot diff output file."""
-        results: Dict[str, List[str]] = {
-            "keys_added": [],
-            "values_added": [],
-            "files_added": []
-        }
+        """Parses Regshot diff file safely."""
+        results: Dict[str, List[str]] = {"keys_added": [], "values_added": [], "files_added": []}
         if not self.regshot_path or not self.regshot_path.exists():
             return results
 
@@ -236,35 +395,28 @@ class BehavioralAnalyzer:
             with open(self.regshot_path, "r", encoding="utf-8", errors="ignore") as f:
                 content = f.read()
 
-            current_section = None
+            current = None
             for line in content.splitlines():
-                line_s = line.strip()
-                if "Keys added:" in line_s:
-                    current_section = "keys_added"
+                s = line.strip()
+                if "Keys added:" in s:
+                    current = "keys_added"
+                elif "Values added:" in s:
+                    current = "values_added"
+                elif "Files added:" in s:
+                    current = "files_added"
+                elif s.startswith("---"):
                     continue
-                elif "Values added:" in line_s:
-                    current_section = "values_added"
-                    continue
-                elif "Files added:" in line_s:
-                    current_section = "files_added"
-                    continue
-                elif line_s.startswith("----------------------------------"):
-                    continue
-                elif not line_s:
-                    current_section = None
-                    continue
-
-                if current_section and line_s:
-                    results[current_section].append(line_s)
+                elif not s:
+                    current = None
+                elif current and s:
+                    results[current].append(s)
         except Exception as e:
-            self.errors.append(f"Failed to parse Regshot ({self.regshot_path.name}): {e}")
+            self.errors.append(f"Error parsing Regshot: {e}")
 
-        for k in results:
-            results[k] = results[k][:30]
         return results
 
     def analyze(self) -> Dict[str, Any]:
-        """Executes parsing across all available behavioral artifact files."""
+        """Executes parsing across all behavioral artifacts."""
         pcap_data = self.parse_pcap()
         procmon_data = self.parse_procmon_csv()
         regshot_data = self.parse_regshot()
@@ -273,5 +425,6 @@ class BehavioralAnalyzer:
             "network": pcap_data,
             "host_behavior": procmon_data,
             "regshot": regshot_data,
-            "errors": self.errors
+            "errors": self.errors,
+            "warnings": self.warnings
         }

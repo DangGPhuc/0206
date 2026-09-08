@@ -1,18 +1,51 @@
-# Môi trường ảo & Python cache
+# 0206 Data & Artifact Exclusions
+
+# Python cache & virtual environments
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.env
+*.env
 venv/
 env/
-__pycache__/
-*.pyc
+.venv/
 
-# API keys & cấu hình bí mật
-.env
-config.json
-
-# File mẫu mã độc & dữ liệu phân tích nhạy cảm
-samples/
-malware_samples/
+# Malware samples & binaries (STRICT: Never commit binaries)
 *.exe
 *.dll
+*.sys
+*.bin
+*.raw
+*.elf
+*.dylib
+*.so.*
+malware_samples/
+samples/
+case_data/
+
+# Network packet traces & memory dumps (STRICT: Never commit PCAPs or Dumps)
 *.pcap
+*.pcapng
+*.cap
+*.dmp
+*.mem
+*.core
+
+# Logs & Behavioral CSV traces
 *.csv
+*.evtx
+*.log
+
+# Generated analysis outputs & reports
+output/
 output_reports/
+reports/
+*.docx
+*.pdf
+
+# Cryptographic keys & secrets
+*.pem
+*.key
+*.pkcs12
+*.pfx

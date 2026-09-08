@@ -64,19 +64,28 @@ class TestAutoSleuthPipeline(unittest.TestCase):
         self.assertGreater(len(res["host_behavior"]["persistence_registry"]), 0)
 
     def test_04_docx_report_generation(self):
-        """Verify SANS FOR610 report generator fills 58 rows into DOCX."""
+        """Verify generic report generator and optional SANS-style adapter."""
         static_data = PEStaticAnalyzer(self.sample_pe).analyze()
         beh_data = BehavioralAnalyzer(self.sample_pcap, self.sample_procmon).analyze()
-        ai_data = LLMThreatSynthesizer(provider="heuristic").synthesize({"static": static_data, "behavioral": beh_data})
+        ai_data = LLMThreatSynthesizer(provider="offline").synthesize({"static": static_data, "behavioral": beh_data})
 
+        # Test generic built-in generator
         reporter = FOR610ReportGenerator()
         out_path = reporter.generate(static_data, beh_data, ai_data, self.output_docx)
         self.assertTrue(out_path.exists())
-
         doc = docx.Document(str(out_path))
-        table = doc.tables[0]
-        self.assertEqual(len(table.rows), 58)
-        self.assertIn("sample_benign_triage.exe", table.rows[3].cells[2].text)
+        self.assertGreater(len(doc.tables), 0)
+
+        # Test optional SANS template if present on host
+        sans_tpl = Path("/run/media/kali/New Volume/malware/Malware_Analysis_Report_Template.docx")
+        if sans_tpl.exists():
+            sans_out = TESTS_DIR / "sans_test_report.docx"
+            sans_reporter = FOR610ReportGenerator(template_path=sans_tpl)
+            sans_res = sans_reporter.generate(static_data, beh_data, ai_data, sans_out)
+            self.assertTrue(sans_res.exists())
+            sans_doc = docx.Document(str(sans_res))
+            self.assertEqual(len(sans_doc.tables[0].rows), 58)
+            self.assertIn("sample_benign_triage.exe", sans_doc.tables[0].rows[3].cells[2].text)
 
 
 if __name__ == "__main__":

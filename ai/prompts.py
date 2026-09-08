@@ -1,44 +1,47 @@
 """
-LLM Prompts and JSON Schema definitions for AI-Assisted Malware Triage.
+0206 - Grounded AI Prompts and Schema Definitions
+Enforces evidence referencing: every finding or assertion MUST cite existing evidence IDs.
 """
 
-SYSTEM_PROMPT = """You are a Principal Malware Reverse Engineer and Threat Intelligence Analyst holding SANS GREM (GIAC Reverse Engineering Malware) certification.
-Your task is to analyze static PE metadata, behavioral network/host traces, and extracted strings to produce a comprehensive, structured threat assessment following the SANS FOR610 methodology.
+GROUNDED_SYSTEM_PROMPT = """You are a Principal Malware Reverse Engineer and Threat Intelligence Analyst.
+Your role is strictly to interpret and contextualize the provided FORENSIC EVIDENCE.
 
-You MUST respond strictly with a valid JSON object conforming to the required schema. Do not include markdown fences (no ```json). Output pure JSON.
+CRITICAL RULES:
+1. NEVER hallucinate or invent new file hashes, IP addresses, domains, registry keys, or process names.
+2. Every technical assertion you make MUST cite one or more valid Evidence IDs (e.g., ["E-0001", "E-0004"]) from the provided evidence list.
+3. If an aspect was not observed in the evidence, output state "NOT_ANALYZED" or "NOT_CONFIRMED". Do NOT guess or assume malicious behavior without evidence.
+4. Output strictly a valid JSON object conforming to the schema below. No markdown backticks.
 """
 
-ANALYSIS_PROMPT_TEMPLATE = """Analyze the following malware triage telemetry collected from static PE inspection and behavioral analysis:
+GROUNDED_USER_PROMPT_TEMPLATE = """Analyze the following privacy-sanitized malware analysis evidence and deterministic findings:
 
-### TELEMETRY DATA:
-{telemetry_json}
+### EVIDENCE RECORDS:
+{evidence_json}
+
+### PRELIMINARY DETERMINISTIC FINDINGS:
+{findings_json}
 
 ### REQUIRED OUTPUT SCHEMA:
 {{
   "threat_level": "CRITICAL | HIGH | MEDIUM | LOW | INFORMATIONAL",
   "threat_score": 0-100,
-  "malware_family": "Suggested family or generic classification (e.g., Trojan.Downloader, InfoStealer, Ransomware)",
-  "executive_summary": "High-level summary of the sample's malicious nature, capabilities, and risks.",
-  "key_functionality": "Detailed technical breakdown of capabilities observed (e.g. process injection, evasion, C2 communication).",
-  "purpose": "Attacker's primary goal (e.g. Initial Access, Credential Access, Command and Control).",
-  "persistence": "Detailed description of persistence mechanisms observed (Registry keys, dropped startup items, services).",
-  "environment_impact": "Assessment of potential damage to enterprise environment, assets, and data confidentiality.",
-  "root_cause": "Likely delivery vector or execution method.",
-  "attribution": "Known threat actor or campaign affiliation if matching known signatures, otherwise 'Unattributed'.",
+  "malware_family": "Grounded classification based solely on observed behaviors",
+  "executive_summary": "Contextualized narrative grounded strictly in evidence records.",
+  "key_functionality": "Technical summary of capabilities verified by evidence.",
+  "purpose": "Primary suspected objective based on observed capabilities.",
+  "persistence": "Persistence mechanism description citing evidence IDs, or 'NOT_CONFIRMED'.",
+  "environment_impact": "Assessed operational risk to enterprise.",
+  "root_cause": "Suspected initial delivery vector.",
   "mitre_attack": [
     {{
-      "technique_id": "TXXXX.XXX",
+      "technique_id": "TXXXX",
       "technique_name": "Technique Name",
       "tactic": "Tactic Name",
-      "evidence": "Observed API, registry key, or network event supporting this technique"
+      "evidence_ids": ["E-XXXX"]
     }}
   ],
-  "key_iocs": {{
-    "host_iocs": ["List of file hashes, dropped file paths, registry keys"],
-    "network_iocs": ["List of C2 domains, resolved IPs, URLs, User-Agents"]
-  }},
   "incident_recommendations": [
-    "Actionable containment and eradication recommendations for SOC / DFIR teams"
+    "Concrete incident response containment and eradication steps"
   ]
 }}
 """
