@@ -1,0 +1,55 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "0206"
+version = "2.0.0"
+description = "Modular, Evidence-Grounded Malware Triage & Analysis Platform"
+readme = "README.md"
+authors = [
+    { name = "DangGPhuc" }
+]
+requires-python = ">=3.10"
+license = { text = "MIT" }
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Information Technology",
+    "Intended Audience :: Science/Research",
+    "Topic :: Security",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13"
+]
+dependencies = [
+    "pefile>=2023.2.7",
+    "scapy>=2.5.0",
+    "capstone>=5.0.0",
+    "python-docx>=1.0.0",
+    "pydantic>=2.0.0",
+    "rich>=13.0.0",
+    "openai>=1.0.0",
+    "cryptography>=41.0.0"
+]
+
+[project.optional-dependencies]
+yara = [
+    "yara-python>=4.3.0"
+]
+dev = [
+    "pytest>=7.0.0",
+    "flake8>=6.0.0"
+]
+all-open-source = [
+    "yara-python>=4.3.0",
+    "capa>=7.0.0"
+]
+
+[project.scripts]
+0206 = "main:main"
+
+[tool.setuptools]
+packages = ["core", "analyzer", "ai", "integrations", "integrations.adapters", "report", "report.adapters", "reporter", "scripts"]
+py-modules = ["main", "config"]

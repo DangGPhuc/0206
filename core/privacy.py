@@ -35,8 +35,10 @@ class PrivacyRedactor:
         self._linux_user_re = re.compile(r'(/(?:home|Users)/)([^/]+)(/.*)?')
         # 3. Hostnames in analysis stations
         self._host_re = re.compile(r'\b(DESKTOP-[A-Z0-9]+|WIN-[A-Z0-9]+|[A-Z0-9_-]+-STATION-\d+)\b', re.IGNORECASE)
-        # 4. API keys and bearer tokens
-        self._secret_re = re.compile(r'(sk-[a-zA-Z0-9]{20,}|Bearer\s+[a-zA-Z0-9_\-\.]{20,}|(?:api[_-]?key|password|secret)[\s:=]+[\'\"][^\'\"]+[\'\"])', re.IGNORECASE)
+        # 4. API keys and bearer tokens (including OpenAI sk- and sk-proj- keys)
+        self._secret_re = re.compile(r'(sk-[a-zA-Z0-9_\-]{20,}|Bearer\s+[a-zA-Z0-9_\-\.]{20,}|(?:api[_-]?key|password|secret)[\s:=]+[\'\"][^\'\"]+[\'\"])', re.IGNORECASE)
+        # 5. Private keys (PEM format)
+        self._privkey_re = re.compile(r'-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z ]*PRIVATE KEY-----')
 
     def _harvest_usernames(self, data: Any):
         """Scans input structure to register any username patterns for full text scrubbing."""
@@ -63,8 +65,9 @@ class PrivacyRedactor:
         if not text or self.mode == PrivacyMode.NONE:
             return text
 
-        # Redact secrets regardless of mode (strict & standard)
+        # Redact secrets and private keys regardless of mode (strict & standard)
         text = self._secret_re.sub(r'[REDACTED_SECRET]', text)
+        text = self._privkey_re.sub(r'[REDACTED_PRIVATE_KEY]', text)
 
         # Harvest user identity if present in paths
         for m in self._win_user_re.finditer(text):
@@ -124,3 +127,48 @@ class PrivacyRedactor:
             return self._redact_recursive(data.dict())
         else:
             return copy.deepcopy(data)
+
+    def audit_for_transmission(self, data: Any) -> tuple[bool, List[str]]:
+        """
+        Performs a mandatory DLP audit on data scheduled for external/remote transmission.
+        Returns (is_safe, violation_reasons).
+        If unsafe data remains, remote transmission MUST be blocked.
+        """
+        violations: List[str] = []
+
+        def _check_string(val: str, path_prefix: str = ""):
+            if self._secret_re.search(val):
+                violations.append(f"Unredacted credential or API key found at {path_prefix}")
+            if self._privkey_re.search(val):
+                violations.append(f"Unredacted private key found at {path_prefix}")
+            if self.mode == PrivacyMode.STRICT:
+                if self._win_user_re.search(val) and "<REDACTED_USER>" not in val:
+                    violations.append(f"Unredacted Windows user path found at {path_prefix}")
+                if self._linux_user_re.search(val) and "<REDACTED_USER>" not in val:
+                    violations.append(f"Unredacted Linux user path found at {path_prefix}")
+                if self._host_re.search(val) and "<REDACTED_HOST>" not in val:
+                    violations.append(f"Unredacted station hostname found at {path_prefix}")
+
+        def _scan(obj: Any, prefix: str = ""):
+            if isinstance(obj, str):
+                _check_string(obj, prefix)
+            elif isinstance(obj, dict):
+                for k, v in obj.items():
+                    _check_string(str(k), f"{prefix}.{k}")
+                    _scan(v, f"{prefix}.{k}")
+            elif isinstance(obj, (list, tuple, set)):
+                for idx, item in enumerate(obj):
+                    _scan(item, f"{prefix}[{idx}]")
+
+        _scan(data, "payload")
+        is_safe = len(violations) == 0
+        return is_safe, violations
+
+
+BLOCK_REMOTE_TRANSMISSION = "BLOCK_REMOTE_TRANSMISSION"
+
+
+class DLPViolationError(RuntimeError):
+    """Raised when sensitive unredacted telemetry violates the DLP boundary."""
+    pass
+

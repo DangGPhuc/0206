@@ -5,238 +5,230 @@
 [![MITRE ATT&CK](https://img.shields.io/badge/MITRE-ATT%26CK%20v14-orange.svg)](https://attack.mitre.org/)
 [![Status: Ready](https://img.shields.io/badge/Status-Production%20Triage-brightgreen.svg)]()
 
-**0206** is an open, modular, evidence-grounded malware triage and automated forensic reporting platform.
+**0206** is a modular, evidence-grounded malware triage and automated forensic reporting platform designed to be completely self-contained, reproducible, portable, and privacy-safe.
 
-Designed for reverse engineers, SOC analysts, and incident responders, 0206 bridges the gap between raw binary inspection, behavioral telemetry (PCAP network traces, Process Monitor event logs), deterministic rule correlation, and multi-format reporting (JSON, Markdown, DOCX).
+A new user can clone and run **0206** in minutes without IDA Pro, Ghidra, x64dbg, WinDbg, PEView, cloud APIs, MCP servers, or proprietary courseware.
+
+---
+
+## ⚡ Quickstart
+
+```bash
+# 1. Clone repository
+git clone https://github.com/DangGPhuc/0206.git
+cd 0206
+
+# 2. Set up virtual environment and install in editable mode
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -e .
+
+# 3. Verify environment health & platform diagnostics
+0206 doctor
+
+# 4. Run automated offline self-test
+0206 selftest
+
+# 5. Analyze sample in 100% offline mode
+0206 analyze sample.exe --offline
+```
 
 ---
 
 ## 🏛️ Core Architectural Philosophy
 
 ### 1. The 3-Tier Canonical Domain Model
-To prevent speculative or hallucinated conclusions, 0206 strictly separates **Facts**, **Inferences**, and **Assessments**:
+To eliminate ungrounded claims and hallucinations, 0206 strictly separates **Observed Facts**, **Calibrated Findings**, and **Contextual Assessment**:
 
 ```
-[ Tier 1: Raw Evidence (Facts) ]
+[ Tier 1: Raw Evidence Records (Facts) ]
        │  E-0020: "API Hash constant 0x382C0F97 (djb2: VirtualAlloc) at offset 0x8200"
        │  E-0027: "File dropped: C:\Users\<REDACTED_USER>\AppData\Local\Temp\payload.exe"
        │  E-0029: "Registry key written: HKCU\Software\Microsoft\Windows\CurrentVersion\Run"
        ▼
-[ Tier 2: Technical Findings (Inferences) ]
+[ Tier 2: Derived Findings (Inferences) ]
        │  F-0001: [OBSERVED] "Embedded Win32 API Hashing Constants" (citing E-0020)
        │  F-0002: [OBSERVED] "Executable Dropped to Host Filesystem" (citing E-0027)
        │  F-0003: [OBSERVED] "Registry Autostart Persistence Modification" (citing E-0029)
        ▼
 [ Tier 3: Contextual Assessment (Evaluation) ]
-          A-0001: Threat Score: 65/100 (HIGH) | Classification: Backdoor / Persistent Trojan
+          Score: 65/100 (HIGH) | Classification: Backdoor / Persistent Trojan
 ```
 
-### 2. Supported Evidence States
-- `OBSERVED`: Explicitly verified in binary headers, sections, or event logs.
-- `INFERRED`: Derived logically from observed artifacts (e.g. potential packing from high entropy + 0-sized raw section).
-- `NOT_CONFIRMED`: Suspected capability whose runtime execution was not confirmed dynamically.
-- `NOT_ANALYZED`: The artifact or analysis phase was not conducted.
-- `NOT_AVAILABLE`: Required tool or dependency is uninstalled.
+### 2. Evidence States
+- `OBSERVED`: Directly verified in binary headers, code sections, or log streams.
+- `INFERRED`: Logically deduced capability (e.g., potential packing from high entropy + 0-sized raw section).
+- `NOT_CONFIRMED`: Suspected capability whose runtime execution was not validated dynamically.
+- `NOT_ANALYZED`: The artifact or analysis phase was omitted.
+- `NOT_AVAILABLE`: Required tool or package is not installed.
 
-*Rule: 0206 never silently converts `NOT_ANALYZED` into a positive threat assertion.*
+*Rule: An imported API alone never implies execution; an RWX section indicates potential capability, never confirmed injection.*
 
 ---
 
-## 🧩 Architecture & Dataflow
+## 🧩 Runtime Pipeline Architecture
 
 ```mermaid
 flowchart TD
-    subgraph Inputs["1. Analysis Artifacts (Optional)"]
+    subgraph Inputs["1. Analysis Artifacts"]
         PE["PE Binary (.exe, .dll)"]
         PCAP["Network Trace (.pcap)"]
         PROCMON["Procmon Log (.csv)"]
         REGSHOT["Regshot Diff (.txt)"]
     end
 
-    subgraph Analyzers["2. Modular Ingestion Engines"]
-        PEA["PEStaticAnalyzer\n- Headers, Sections, Entropy\n- Imphash, Authenticode\n- API Hashing Scanner"]
-        DIS["CodeAnalyzer (Capstone)\n- Entry-Point Disassembly\n- Control-Flow Patterns"]
-        NET["BehavioralAnalyzer (Network)\n- Streaming PcapReader\n- Multi-factor Beacon Scoring\n- DNS & HTTP Extraction"]
-        HOST["BehavioralAnalyzer (Host)\n- Normalized Event Stream\n- File Drops & Run Keys"]
+    subgraph Orchestrator["2. Analysis Orchestrator"]
+        RP["Resource Policy Guard"]
+        MAN["AnalysisManifest (Streaming Input Hashes)"]
+        ES["EvidenceStore (Atomic EvidenceRecords)"]
     end
 
-    subgraph CoreLayer["3. Core Domain Layer"]
-        ES["EvidenceStore\nAtomic EvidenceRecords (E-xxxx)"]
-        FE["FindingEngine\nDeterministic Correlation (F-xxxx)"]
-        PR["PrivacyRedactor\nStrict / Standard Redaction"]
+    subgraph Analyzers["3. Ingestion Engines"]
+        PEA["PEStaticAnalyzer (Headers, Sections, Entropy, Imports)"]
+        DIS["CodeAnalyzer (Capstone Static Code Triage)"]
+        BEH["BehavioralAnalyzer (Streaming PCAP, Beacons, Host Logs)"]
+        ADAPT["Optional Tool Adapters (Tier 2 / Tier 3)"]
     end
 
-    subgraph AIEnrichment["4. Threat Contextualization"]
-        AI["LLMThreatSynthesizer\n- Offline Deterministic Engine\n- Optional OpenAI / Ollama\n- Evidence ID Validation"]
+    subgraph Correlation["4. Finding Engine & Privacy Boundary"]
+        FE["FindingEngine (Evidence Grounding & Validation)"]
+        DLP["PrivacyRedactor & DLP Filter\n(Scrub Usernames, Paths, Secrets)"]
     end
 
-    subgraph Deliverables["5. Multi-format Reporting"]
-        REP_JSON["Canonical report.json"]
+    subgraph Synthesis["5. Threat Synthesis"]
+        AI["LLMThreatSynthesizer\n- Deterministic Offline Engine (Default)\n- Optional LLM with DLP Audit & Evidence Validation"]
+    end
+
+    subgraph Deliverables["6. Canonical Session Deliverables"]
+        REP_JSON["report.json"]
         REP_MD["report.md"]
-        REP_DOCX["report.docx\n(Generic Built-in or SANS Adapter)"]
-        MANIFEST["analysis_manifest.json"]
+        REP_DOCX["report.docx (Built-in Generic or User Template)"]
         EV_STORE["evidence.json"]
+        FIND_CAT["findings.json"]
+        AUD_MAN["analysis_manifest.json (Output Lineage Hashes)"]
     end
 
-    PE --> PEA
-    PE --> DIS
-    PCAP --> NET
-    PROCMON --> HOST
-    REGSHOT --> HOST
+    PE --> RP --> MAN --> ES
+    PCAP --> RP --> MAN --> ES
+    PROCMON --> RP --> MAN --> ES
+    REGSHOT --> RP --> MAN --> ES
 
-    PEA --> ES
-    DIS --> ES
-    NET --> ES
-    HOST --> ES
+    ES --> PEA --> ES
+    ES --> DIS --> ES
+    ES --> BEH --> ES
+    ES --> ADAPT --> ES
 
     ES --> FE
-    FE --> AI
-    ES --> AI
-    PR -.-> AI
-
+    FE --> DLP
+    DLP --> AI
     AI --> REP_JSON
     AI --> REP_MD
     AI --> REP_DOCX
-    ES --> REP_JSON
     ES --> EV_STORE
-    CoreLayer --> MANIFEST
+    FE --> FIND_CAT
+    MAN --> AUD_MAN
 ```
 
 ---
 
-## 🚀 Key Features
+## 🎛️ Analysis Profiles
 
-### 1. Capability Detection & Doctor (`0206 doctor`)
-0206 provides a tiered tool adapter architecture that never crashes if third-party software is missing:
+0206 supports profiles tailored to available resources and depth requirements:
 
-| Feature / Component | Tier | Core / Optional | External Dependency Required |
-| :--- | :--- | :--- | :--- |
-| **PE Static Inspection** | Tier 1 | Core | `pefile` (Python) |
-| **Streaming PCAP Ingestion** | Tier 1 | Core | `scapy` (Python) |
-| **Entry Disassembly** | Tier 1 | Core | `capstone` (Python) |
-| **DOCX / MD / JSON Exporters** | Tier 1 | Core | `python-docx` (Python) |
-| **Evidence Store & Finding Engine**| Tier 1 | Core | Pure Python / Pydantic |
-| **Offline Threat Synthesizer** | Tier 1 | Core | Pure Python (Zero Internet) |
-| **Ghidra Adapter** | Tier 2 | Optional | Ghidra CLI / headless |
-| **YARA Rule Scanner** | Tier 2 | Optional | `yara-python` or YARA CLI |
-| **radare2 Disassembler** | Tier 2 | Optional | `r2` / `radare2` |
-| **capa Capability Detection** | Tier 2 | Optional | `capa` binary |
-| **pe-sieve Process Dumper** | Tier 2 | Optional | `pe-sieve` binary |
-| **IDA Pro Adapter** | Tier 3 | Optional | IDA Pro (`ida64` / `idat`) |
-| **x64dbg / WinDbg** | Tier 3 | Optional | Windows Debugger CLI |
+| Profile | Command Flag | Ingestion Scope | Integrations | Default AI |
+| :--- | :--- | :--- | :--- | :--- |
+| **minimal** | `--profile minimal` | PE headers, hashes, sections, imports, strings, Capstone triage | Built-in only | Offline (forced) |
+| **standard** | `--profile standard` | Minimal + PCAP, Procmon, Regshot | YARA, capa (if installed) | Offline (configurable) |
+| **full** | `--profile full` | Standard + deep disassembly & decompilation | Ghidra, radare2, pe-sieve, IDA, debuggers (if installed) | Offline (configurable) |
 
-Run environment diagnostics at any time:
-```bash
-python3 main.py doctor
-```
-
-### 2. Multi-factor Composite Beacon Scoring
-Rather than relying on naive packet counters, 0206 evaluates network traffic using a 5-factor weighted formula:
-$$\text{Beacon Score} = 0.35 \cdot \text{Periodicity} + 0.20 \cdot \text{Consistency} + 0.25 \cdot \text{Stability} + 0.10 \cdot \text{Size Similarity} + 0.10 \cdot \text{Duration}$$
-
-- `0.00 - 0.29`: `NORMAL`
-- `0.30 - 0.59`: `SUSPICIOUS`
-- `0.60 - 0.79`: `LIKELY_BEACON`
-- `0.80 - 1.00`: `HIGH_CONFIDENCE_BEACON`
-
-Connections are marked with evidence-grounded terms (`POTENTIAL_BEACON`, `SUSPECTED_C2`) and never labeled as confirmed C2 without validated protocol evidence.
-
-### 3. Privacy-First Redaction
-Built-in `PrivacyRedactor` guarantees that local usernames, home-directory paths, and hostnames are sanitized before report presentation or LLM transmission:
-- `C:\Users\Alice\Documents\sample.exe` $\rightarrow$ `C:\Users\<REDACTED_USER>\Documents\sample.exe`
-- `/home/bob/malware/test.bin` $\rightarrow$ `/home/<REDACTED_USER>/malware/test.bin`
-- `DESKTOP-1234AB` $\rightarrow$ `<REDACTED_HOST>`
-- API keys, bearer tokens, and private keys are scrubbed automatically.
-- Non-mutating design: original telemetry objects are preserved.
-
-### 4. Template Independence
-- **Default:** Generates clean, standalone DOCX and Markdown reports with zero external template dependency.
-- **Custom Templates:** Supports user-provided templates (including SANS-style 58-row formats) via `--template <path>`.
-- Core engine contains zero proprietary course material, PDFs, or copyrighted slides.
+*Missing optional tools are skipped gracefully without failing the analysis.*
 
 ---
 
-## 📦 Installation
+## 💻 CLI Commands
 
 ```bash
-# Clone the repository
-git clone https://github.com/DangGPhuc/0206.git
-cd 0206
+# Run environment & tool diagnostic doctor
+0206 doctor
 
-# Install dependencies in clean environment
-pip install -r requirements.txt
+# View detected capability matrix
+0206 capabilities
 
-# Run capability diagnostics
-python3 main.py doctor
+# Run automated platform self-test (synthetic benign fixture)
+0206 selftest
+
+# Analyze sample with network and process telemetry in offline mode
+0206 analyze sample.exe --pcap traffic.pcap --procmon procmon.csv --offline
+
+# Analyze with custom profile and strict privacy mode
+0206 analyze sample.exe --profile standard --privacy strict
+
+# Validate a custom DOCX report template
+0206 validate-template template.docx
+
+# Inspect an analysis audit manifest and output lineage
+0206 manifest output/analysis_manifest.json
 ```
 
 ---
 
-## 💻 Usage
+## 📦 Session Deliverables & Output Lineage
 
-### 1. Analyze Sample in Offline Mode (Safe Default)
-```bash
-python3 main.py analyze /path/to/sample.exe \
-  --pcap /path/to/traffic.pcap \
-  --procmon /path/to/procmon.csv \
-  --offline \
-  --output-dir output
-```
+Every analysis run produces 6 canonical deliverables:
 
-### 2. Analyze with User-Provided Custom DOCX Template
-```bash
-python3 main.py analyze sample.exe \
-  --template /path/to/custom_template.docx \
-  --output-dir case_output
-```
-
-### 3. Validate a Custom DOCX Template
-```bash
-python3 main.py validate-template /path/to/template.docx
-```
-
-### 4. Optional AI Enrichment (OpenAI / Ollama)
-```bash
-# OpenAI
-export OPENAI_API_KEY="sk-..."
-python3 main.py analyze sample.exe --model gpt-4o
-
-# Local Ollama (Offline Local LLM)
-python3 main.py analyze sample.exe --api-base http://localhost:11434/v1 --model llama3.2
-```
+1. **`report.json`**: Machine-readable triage summary with findings and assessment.
+2. **`report.md`**: Clean, human-readable Markdown summary.
+3. **`report.docx`**: Professional Word document formatted using the built-in generic adapter or user-supplied template.
+4. **`evidence.json`**: Complete atomic `EvidenceRecord` catalog with source provenance.
+5. **`findings.json`**: All derived `Finding` objects citing verified evidence IDs.
+6. **`analysis_manifest.json`**: Audit trail containing session parameters, environment specs, input artifact hashes, and output deliverable SHA256 lineage hashes.
 
 ---
 
-## 🛡️ Pre-commit Data & Supply-Chain Guard
+## 🔒 Privacy & DLP Security Boundary
 
-To prevent accidental commits of real malware samples, PCAPs, dumps, or secrets into git, install the pre-commit hook:
-
-```bash
-ln -s ../../scripts/precommit_data_guard.py .git/hooks/pre-commit
-```
-
-Or run the guard manually:
-```bash
-python3 scripts/precommit_data_guard.py
-```
+0206 implements a strict data protection boundary before presentation or remote AI enrichment:
+- **Username scrubbed:** `C:\Users\JohnDoe\Desktop\sample.exe` $\rightarrow$ `C:\Users\<REDACTED_USER>\Desktop\sample.exe`
+- **Linux paths scrubbed:** `/home/analyst/cases/sample.bin` $\rightarrow$ `/home/<REDACTED_USER>/cases/sample.bin`
+- **Hostnames sanitized:** `DESKTOP-1234AB` $\rightarrow$ `<REDACTED_HOST>`
+- **Secrets & Keys redacted:** API keys (`sk-...`), bearer tokens, and private keys (`-----BEGIN PRIVATE KEY-----`) are redacted.
+- **DLP Audit:** If unredacted sensitive tokens remain prior to external transmission, `BLOCK_REMOTE_TRANSMISSION` triggers and forces deterministic offline synthesis.
 
 ---
 
-## 🧪 Testing
+## 🔌 Integration Architecture & MCP Contract
 
-Run the comprehensive unit and integration test suite:
+0206 uses an adapter-based design (`integrations/base.py`) that decouples core triage from optional external tooling:
 
-```bash
-python3 -m unittest discover -s tests -p "test_*.py"
+- **Tier 1 (Core):** `pefile`, `scapy`, `capstone`, `python-docx`, `pydantic`, `rich` (100% open-source, pip-installable).
+- **Tier 2 (Open Source Optional):** `YARA`, `capa`, `Ghidra`, `radare2`, `pe-sieve`, `FLOSS`.
+- **Tier 3 (Proprietary Optional):** `IDA Pro`, `x64dbg`, `WinDbg`.
+
+### Model Context Protocol (MCP) Contract
+0206 includes an optional MCP contract (`integrations/mcp_contract.py`). External MCP servers or agentic tools can ingest structured evidence into 0206:
 ```
+External MCP Server / Tool ──► MCPEvidenceIngester ──► EvidenceRecord ──► EvidenceStore
+```
+MCP is strictly optional; 0206 does not require an active MCP server to function.
 
 ---
 
-## ⚠️ Limitations & Safe Usage
+## 🛡️ Resource Safety Limits
 
-1. **Static and Behavioral Ingestion Only:** 0206 ingests static binaries and dynamic logs. It **does NOT** execute malware binaries directly on your host machine. Always execute malware inside an isolated virtual machine or sandbox.
-2. **Packer Heuristics:** Shannon entropy and section layout differences provide indicators of packing, not definitive cryptographic proof.
-3. **API Hashing:** Constants detected in binary data indicate probable dynamic resolution techniques, but runtime use must be verified dynamically.
+Enforced via `core/resource_policy.py`:
+- `MAX_SAMPLE_SIZE`: 100 MB
+- `MAX_PCAP_SIZE`: 250 MB
+- `MAX_PACKETS`: 50,000 packets (processed via memory-safe streaming `PcapReader`)
+- `MAX_LOG_ROWS`: 50,000 log rows
+- `ANALYSIS_TIMEOUT`: 300 seconds
+
+---
+
+## ⚠️ Safe Malware Handling & Limitations
+
+1. **Static & Log Telemetry Only:** 0206 does NOT execute malware binaries directly on your analysis station. Execute samples only inside an isolated virtual machine or sandbox.
+2. **Heuristic Calibration:** Entropy and section metrics signal potential packing, not mathematical certainty.
+3. **Static Code Triage:** Entry-point disassembly via Capstone provides fast initial triage, not full interactive decompilation.
 
 ---
 

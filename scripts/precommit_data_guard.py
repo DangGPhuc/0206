@@ -23,12 +23,13 @@ BLOCKED_EXTENSIONS = {
     ".key", ".pem", ".pkcs12", ".pfx"
 }
 
-# Secret / API key patterns
+# Secret / API key and proprietary marker patterns
 SECRET_PATTERNS = [
-    (re.compile(r'sk-[a-zA-Z0-9]{20,}'), "OpenAI API Key"),
+    (re.compile(r'sk-[a-zA-Z0-9_\-]{20,}'), "OpenAI API Key"),
     (re.compile(r'ghp_[a-zA-Z0-9]{36}'), "GitHub Personal Access Token"),
     (re.compile(r'AKIA[0-9A-Z]{16}'), "AWS Access Key ID"),
-    (re.compile(r'-----BEGIN (?:RSA |EC )?PRIVATE KEY-----'), "Private Key Header")
+    (re.compile(r'-----BEGIN (?:RSA |EC )?PRIVATE KEY-----'), "Private Key Header"),
+    (re.compile(r'(?:SANS\s+FOR610|Maldev\s+Academy\s+Courseware)', re.IGNORECASE), "Proprietary Copyrighted Courseware")
 ]
 
 

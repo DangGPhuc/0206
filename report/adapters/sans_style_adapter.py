@@ -69,7 +69,7 @@ class SANSStyleReportAdapter(BaseReportAdapter):
         set_kv(6, 2, assessment.get("purpose", "Suspicious artifact submitted for triage"))
 
         # 2. STATIC ANALYSIS
-        set_kv(8, 1, f"{file_info.get('file_size', 0):,} bytes")
+        set_kv(8, 1, f"{(file_info.get('file_size') or 0):,} bytes")
         set_kv(9, 1, "Default application icon")
         set_kv(10, 1, "[OBSERVED] Signed" if file_info.get("is_signed") else "[OBSERVED] Unsigned (No digital signature found)")
         

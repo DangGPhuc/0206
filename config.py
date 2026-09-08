@@ -98,9 +98,9 @@ SUSPICIOUS_STRING_KEYWORDS = [
 
 # Optional External Tool Executable Paths (overridable by environment variables)
 EXTERNAL_TOOLS = {
-    "ghidra": os.getenv("AUTOSLEUTH_GHIDRA_PATH", "ghidra"),
-    "ida": os.getenv("AUTOSLEUTH_IDA_PATH", "ida64"),
-    "x64dbg": os.getenv("AUTOSLEUTH_X64DBG_PATH", "x64dbg"),
-    "yara": os.getenv("AUTOSLEUTH_YARA_PATH", "yara"),
-    "pesieve": os.getenv("AUTOSLEUTH_PESIEVE_PATH", "pe-sieve")
+    "ghidra": os.getenv("O206_GHIDRA_PATH") or os.getenv("AUTOSLEUTH_GHIDRA_PATH", "ghidra"),
+    "ida": os.getenv("O206_IDA_PATH") or os.getenv("AUTOSLEUTH_IDA_PATH", "ida64"),
+    "x64dbg": os.getenv("O206_X64DBG_PATH") or os.getenv("AUTOSLEUTH_X64DBG_PATH", "x64dbg"),
+    "yara": os.getenv("O206_YARA_PATH") or os.getenv("AUTOSLEUTH_YARA_PATH", "yara"),
+    "pesieve": os.getenv("O206_PESIEVE_PATH") or os.getenv("AUTOSLEUTH_PESIEVE_PATH", "pe-sieve")
 }

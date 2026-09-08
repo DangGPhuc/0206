@@ -1,10 +1,14 @@
 """
 0206 - Findings and Assessment Layer
 Strictly separates raw Evidence (facts), Findings (inferences), and Assessments (evaluations).
+Enforces calibrated threat attribution without ungrounded overclaims.
 """
 from enum import Enum
 from typing import Any, Dict, List, Optional
 from datetime import datetime, timezone
+import json
+import hashlib
+from pathlib import Path
 from pydantic import BaseModel, Field
 
 from core.evidence import EvidenceState, EvidenceStore
@@ -21,12 +25,13 @@ class FindingCategory(str, Enum):
     DISASSEMBLY_ANOMALY = "DISASSEMBLY_ANOMALY"
     DATA_EXFILTRATION = "DATA_EXFILTRATION"
     HOST_TAMPERING = "HOST_TAMPERING"
+    CRYPTOGRAPHY = "CRYPTOGRAPHY"
 
 
 class Finding(BaseModel):
     """
-    Tier 2: Finding represents a correlated technical inference derived from one or more EvidenceRecords.
-    Must cite source_evidence_ids.
+    Tier 2: Technical inference derived strictly from one or more verified EvidenceRecords.
+    Must cite source_evidence_ids unless state is NOT_ANALYZED.
     """
     finding_id: str
     category: FindingCategory
@@ -87,12 +92,13 @@ class FindingEngine:
         source_evidence_ids: List[str],
         mitre_attack_id: Optional[str] = None,
         mitre_tactic: Optional[str] = None
-    ) -> Finding:
-        # Validate that all cited evidence IDs exist
-        valid_evidence_ids = []
-        for eid in source_evidence_ids:
-            if self.evidence_store.get(eid):
-                valid_evidence_ids.append(eid)
+    ) -> Optional[Finding]:
+        # Validate that cited evidence IDs actually exist in store
+        valid_evidence_ids = [eid for eid in source_evidence_ids if self.evidence_store.get(eid)]
+
+        # If non-NOT_ANALYZED finding has no valid evidence, do NOT fabricate finding
+        if not valid_evidence_ids and evidence_level != EvidenceState.NOT_ANALYZED:
+            return None
 
         fid = f"F-{self._counter:04d}"
         self._counter += 1
@@ -112,26 +118,29 @@ class FindingEngine:
         return f
 
     def analyze(self) -> List[Finding]:
-        """Runs deterministic correlation rules across stored evidence."""
+        """Runs calibrated inference rules across stored evidence."""
         self.findings.clear()
 
-        # 1. Check for RWX sections
+        # 1. Check for RWX sections (Calibrated: RWX Section Detected, NOT Process Injection Confirmed)
         rwx_evs = self.evidence_store.find(field="section_is_rwx")
         rwx_active = [e for e in rwx_evs if e.value is True]
         if rwx_active:
             sec_names = [e.provenance.get("section_name", "unknown") for e in rwx_active]
             self._create_finding(
                 category=FindingCategory.PACKING_AND_OBFUSCATION,
-                title="Executable Section with Writable Permissions (RWX)",
+                title="RWX Section Detected (Writable & Executable)",
                 evidence_level=EvidenceState.OBSERVED,
                 confidence=0.95,
-                details=f"Identified RWX memory permissions in section(s): {', '.join(sec_names)}. Highly indicative of unpacking stub or in-place code injection.",
+                details=(
+                    f"Section(s) {', '.join(sec_names)} possess concurrent Read, Write, and Execute permissions. "
+                    f"While this enables self-modifying code or unpacking stubs, runtime process injection is [NOT_CONFIRMED]."
+                ),
                 source_evidence_ids=[e.evidence_id for e in rwx_active],
                 mitre_attack_id="T1055",
                 mitre_tactic="Defense Evasion"
             )
 
-        # 2. Check for Packing Indicators
+        # 2. Check for Packing Indicators (Calibrated: Possible/Likely Packing, never absolute without unpacking)
         packing_evs = self.evidence_store.find(field="packer_assessment")
         for pe in packing_evs:
             val = pe.value if isinstance(pe.value, dict) else {}
@@ -142,13 +151,17 @@ class FindingEngine:
                     title=f"Sample Packing Assessment: {cls}",
                     evidence_level=EvidenceState.INFERRED,
                     confidence=val.get("confidence", 0.7),
-                    details=f"Packer score {val.get('score', 0)}/100 based on indicators: {'; '.join(val.get('indicators', []))}. Caveats: {'; '.join(val.get('caveats', []))}",
+                    details=(
+                        f"Heuristic packer score {val.get('score', 0)}/100. "
+                        f"Indicators: {'; '.join(val.get('indicators', []))}. "
+                        f"Caveats: {'; '.join(val.get('caveats', ['Entropy is an indicator, not cryptographic proof.']))}"
+                    ),
                     source_evidence_ids=[pe.evidence_id],
                     mitre_attack_id="T1027.002",
                     mitre_tactic="Defense Evasion"
                 )
 
-        # 3. Check for API Hashing constants
+        # 3. Check for API Hashing constants (Calibrated: Constants observed statically, runtime resolution unconfirmed)
         api_hash_evs = self.evidence_store.find(field="api_hash_match")
         if api_hash_evs:
             resolved = [f"{e.value.get('api')} ({e.value.get('algorithm')})" for e in api_hash_evs]
@@ -158,33 +171,34 @@ class FindingEngine:
                 evidence_level=EvidenceState.OBSERVED,
                 confidence=0.85,
                 details=(
-                    f"Detected {len(api_hash_evs)} precomputed API hash constant(s): {', '.join(resolved[:6])}. "
-                    f"Note: [OBSERVED_HASH_CONSTANT] Constants observed statically. [NOT_CONFIRMED] Runtime resolution not dynamically verified."
+                    f"[OBSERVED_HASH_CONSTANT] Detected {len(api_hash_evs)} precomputed API hash constant(s) in binary bytes: "
+                    f"{', '.join(resolved[:6])}. "
+                    f"[NOT_CONFIRMED] Dynamic runtime resolution of these APIs was not verified."
                 ),
                 source_evidence_ids=[e.evidence_id for e in api_hash_evs],
                 mitre_attack_id="T1027.007",
                 mitre_tactic="Defense Evasion"
             )
 
-        # 4. Check for Process Injection APIs
+        # 4. Check for Process Injection APIs (Calibrated: Potential capability, NOT confirmed runtime injection)
         inj_apis = self.evidence_store.find(field="imported_api_injection")
         if inj_apis:
             api_names = [e.value for e in inj_apis]
             self._create_finding(
                 category=FindingCategory.PROCESS_INJECTION,
-                title="Potential Process Injection APIs Imported",
+                title="Potential Process Injection Capability (Static Import)",
                 evidence_level=EvidenceState.INFERRED,
-                confidence=0.75,
+                confidence=0.70,
                 details=(
-                    f"Import Address Table contains APIs capable of memory allocation and thread creation in remote processes: {', '.join(api_names)}. "
-                    f"[NOT_CONFIRMED] Runtime execution of injection was not verified dynamically."
+                    f"Import Address Table contains APIs commonly utilized in process injection techniques: {', '.join(api_names)}. "
+                    f"[NOT_CONFIRMED] Runtime execution of process injection was not observed."
                 ),
                 source_evidence_ids=[e.evidence_id for e in inj_apis],
                 mitre_attack_id="T1055",
                 mitre_tactic="Privilege Escalation / Defense Evasion"
             )
 
-        # 5. Check for Network C2 / Periodic Beacons
+        # 5. Check for Network C2 / Periodic Beacons (Calibrated: Potential Beacon, NOT Confirmed C2)
         beacon_evs = self.evidence_store.find(field="beacon_analysis")
         for b in beacon_evs:
             b_val = b.value if isinstance(b.value, dict) else {}
@@ -196,9 +210,10 @@ class FindingEngine:
                     evidence_level=EvidenceState.INFERRED,
                     confidence=b_val.get("beacon_score", 0.6),
                     details=(
-                        f"Destination {b_val.get('destination_ip')} exhibited periodic connection intervals: "
-                        f"Average interval: {b_val.get('avg_interval', 0):.2f}s, Jitter ratio: {b_val.get('jitter_ratio', 0):.2f}, "
-                        f"Beacon composite score: {b_val.get('beacon_score', 0):.2f}. [SUSPECTED_C2] Runtime C2 confirmation pending protocol validation."
+                        f"Destination {b_val.get('destination_ip')} exhibited periodic network connections. "
+                        f"Interval: avg={b_val.get('avg_interval', 0):.2f}s, jitter={b_val.get('jitter_ratio', 0):.2f}, "
+                        f"Composite Score={b_val.get('beacon_score', 0):.2f}. "
+                        f"[SUSPECTED_C2] Protocol content not confirmed as malicious."
                     ),
                     source_evidence_ids=[b.evidence_id],
                     mitre_attack_id="T1071",
@@ -214,7 +229,7 @@ class FindingEngine:
                 title="Executable Dropped to Host Filesystem",
                 evidence_level=EvidenceState.OBSERVED,
                 confidence=0.95,
-                details=f"Observed file creation/write operations for binary payloads: {', '.join(paths[:4])}.",
+                details=f"[OBSERVED] File system write events created executable binary payloads on disk: {', '.join(paths[:4])}.",
                 source_evidence_ids=[e.evidence_id for e in dropped_evs],
                 mitre_attack_id="T1105",
                 mitre_tactic="Command and Control"
@@ -229,19 +244,30 @@ class FindingEngine:
                 title="Registry Autostart Persistence Modification",
                 evidence_level=EvidenceState.OBSERVED,
                 confidence=0.95,
-                details=f"Detected autostart modification targeting registry Run/RunOnce key(s): {', '.join(keys[:4])}.",
+                details=f"[OBSERVED] Detected registry modification targeting startup Run/RunOnce key(s): {', '.join(keys[:4])}.",
                 source_evidence_ids=[e.evidence_id for e in pers_evs],
                 mitre_attack_id="T1547.001",
                 mitre_tactic="Persistence"
             )
 
+        # 8. Check for Static Disassembly Anomalies (Syscall / PEB)
+        syscall_evs = self.evidence_store.find(field="direct_syscall")
+        if syscall_evs:
+            self._create_finding(
+                category=FindingCategory.DISASSEMBLY_ANOMALY,
+                title="Direct Syscall Instruction in Entry Code",
+                evidence_level=EvidenceState.OBSERVED,
+                confidence=0.90,
+                details=f"[OBSERVED] Direct syscall / sysenter opcode located in static disassembly. Commonly used to bypass user-mode EDR hooks.",
+                source_evidence_ids=[e.evidence_id for e in syscall_evs],
+                mitre_attack_id="T1106",
+                mitre_tactic="Execution"
+            )
+
         return self.findings
 
     def generate_assessment(self) -> Assessment:
-        """
-        Synthesizes active findings into a final Assessment.
-        Calculates threat level, extracts grounded IOCs, and maps MITRE techniques.
-        """
+        """Synthesizes active findings into a final Assessment."""
         findings = self.findings if self.findings else self.analyze()
 
         score = 10
@@ -250,8 +276,8 @@ class FindingEngine:
         network_iocs = set()
         supporting_fids = []
 
-        # Extract IOCs from evidence store directly
-        for e in self.evidence_store.all_records():
+        # Grounded IOC extraction strictly from verified evidence store
+        for e in self.evidence_store.all():
             if e.field == "sha256":
                 host_iocs.add(f"SHA256: {e.value}")
             elif e.field == "imphash" and e.value != "N/A":
@@ -270,7 +296,7 @@ class FindingEngine:
         for f in findings:
             supporting_fids.append(f.finding_id)
             if f.category == FindingCategory.PROCESS_INJECTION:
-                score += 25
+                score += 20
             elif f.category == FindingCategory.PERSISTENCE:
                 score += 25
             elif f.category == FindingCategory.NETWORK_C2:
@@ -280,6 +306,8 @@ class FindingEngine:
             elif f.category == FindingCategory.API_RESOLUTION:
                 score += 15
             elif f.category == FindingCategory.HOST_TAMPERING:
+                score += 15
+            elif f.category == FindingCategory.DISASSEMBLY_ANOMALY:
                 score += 15
 
             if f.mitre_attack_id:
@@ -302,7 +330,6 @@ class FindingEngine:
         else:
             threat_level = "INFORMATIONAL / CLEAN"
 
-        # Classification based on grounded findings
         has_inj = any(f.category == FindingCategory.PROCESS_INJECTION for f in findings)
         has_net = any(f.category == FindingCategory.NETWORK_C2 for f in findings)
         has_pers = any(f.category == FindingCategory.PERSISTENCE for f in findings)
@@ -324,16 +351,16 @@ class FindingEngine:
 
         key_func = (
             f"Observed capabilities include: "
-            f"{'Process injection APIs detected (unconfirmed at runtime); ' if has_inj else ''}"
-            f"{'Outbound periodic C2 beaconing observed; ' if has_net else ''}"
+            f"{'Process injection APIs detected (capability-level inference; unconfirmed at runtime); ' if has_inj else ''}"
+            f"{'Outbound periodic network beacons observed; ' if has_net else ''}"
             f"{'Host persistence established via Registry Run keys; ' if has_pers else ''}"
-            f"Evidence items are grounded in static and behavioral traces."
+            f"All findings reference verified forensic evidence."
         )
 
         purpose = "Establish persistent access on host endpoint and establish command-and-control communication channel."
         persistence_assessment = (
-            "Autostart registry persistence observed directly in behavioral telemetry."
-            if has_pers else "No active autostart persistence observed in provided telemetry."
+            "[OBSERVED] Autostart registry persistence observed directly in behavioral telemetry."
+            if has_pers else "[NOT_CONFIRMED] No active autostart persistence observed in provided telemetry."
         )
 
         recs = [
@@ -359,3 +386,18 @@ class FindingEngine:
             recommendations=recs,
             supporting_finding_ids=supporting_fids
         )
+
+    def export(self, output_path: Path) -> Path:
+        """Exports findings to findings.json."""
+        output_path = Path(output_path)
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        data = [f.model_dump() for f in self.findings]
+        with open(output_path, "w", encoding="utf-8") as f:
+            f.write(json.dumps(data, indent=2))
+        return output_path
+
+    def hash(self) -> str:
+        """Calculates deterministic SHA256 of all findings."""
+        data = [f.model_dump() for f in self.findings]
+        serialized = json.dumps(data, sort_keys=True)
+        return hashlib.sha256(serialized.encode("utf-8")).hexdigest()

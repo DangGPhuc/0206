@@ -68,8 +68,13 @@ class AnalysisManifest(BaseModel):
     # Operational Modes
     ai_mode: str = "offline"
     privacy_mode: str = "strict"
+    profile: str = "standard"
     template_name: Optional[str] = None
     template_sha256: Optional[str] = None
+    adapter_versions: Dict[str, str] = Field(default_factory=dict)
+
+    # Output Lineage & Deliverable Hashes
+    output_lineage: Dict[str, Dict[str, Any]] = Field(default_factory=dict)
 
     # Pipeline status
     analyzers_enabled: List[str] = Field(default_factory=list)
@@ -92,6 +97,18 @@ class AnalysisManifest(BaseModel):
                 "hashes": hashes
             }
 
+    def record_output_artifact(self, name: str, file_path: Path):
+        """Hashes and records a generated output artifact for lineage auditing."""
+        p = Path(file_path)
+        if p.exists():
+            hashes = hash_file_streaming(p)
+            self.output_lineage[name] = {
+                "filename": p.name,
+                "size_bytes": p.stat().st_size,
+                "sha256": hashes.get("sha256", "N/A"),
+                "hashes": hashes
+            }
+
     def export_json(self, output_path: Path):
         """Exports manifest to JSON file."""
         if not self.end_time_utc:
@@ -100,3 +117,4 @@ class AnalysisManifest(BaseModel):
         output_path.parent.mkdir(parents=True, exist_ok=True)
         with open(output_path, "w", encoding="utf-8") as f:
             f.write(json.dumps(self.model_dump(), indent=2))
+

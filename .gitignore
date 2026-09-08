@@ -10,6 +10,9 @@ __pycache__/
 venv/
 env/
 .venv/
+*.egg-info/
+build/
+dist/
 
 # Malware samples & binaries (STRICT: Never commit binaries)
 *.exe
@@ -49,3 +52,4 @@ reports/
 *.key
 *.pkcs12
 *.pfx
+*.egg-info/

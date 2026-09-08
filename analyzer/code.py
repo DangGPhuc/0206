@@ -1,6 +1,9 @@
 """
-0206 - Static Disassembly Module (Capstone Integration)
-Performs static entry-point instruction analysis with graceful fallback.
+0206 - Static Code Triage Module (Capstone Integration)
+Performs static entry-point triage and instruction disassembly with graceful fallback.
+Provides architecture, entry RVA/VA, first N instructions, branch/call targets,
+and heuristic pattern alerts (syscalls, PEB traversal).
+Explicitly scoped as STATIC CODE TRIAGE (not full reverse engineering or decompilation).
 Never crashes if Capstone is missing.
 """
 from pathlib import Path
@@ -19,20 +22,26 @@ except ImportError:
 
 
 class CodeAnalyzer:
-    """Analyzes entry-point instructions and suspicious control-flow patterns."""
+    """Performs static code triage on binary entry-point instructions."""
 
     def __init__(self, file_path: Path, evidence_store: Optional[EvidenceStore] = None):
         self.file_path = Path(file_path)
         self.evidence_store = evidence_store if evidence_store is not None else EvidenceStore()
 
     def analyze(self, max_instructions: int = 30) -> Dict[str, Any]:
-        """Disassembles the entry point of the binary."""
+        """Disassembles the entry point of the binary (Static Code Triage)."""
         artifact_name = self.file_path.name
         result: Dict[str, Any] = {
             "status": "NOT_ANALYZED",
+            "triage_type": "STATIC CODE TRIAGE",
             "architecture": "Unknown",
             "entry_point": "0x0",
+            "entry_rva": "0x0",
+            "entry_va": "0x0",
             "instructions": [],
+            "call_targets": [],
+            "branch_hints": [],
+            "basic_blocks_estimated": 1,
             "suspicious_patterns": [],
             "warnings": []
         }
@@ -56,7 +65,10 @@ class CodeAnalyzer:
             image_base = getattr(pe.OPTIONAL_HEADER, "ImageBase", 0)
             is_64bit = (pe.FILE_HEADER.Machine == 0x8664)
 
+            entry_va = image_base + ep_rva
             result["entry_point"] = f"0x{ep_rva:08X}"
+            result["entry_rva"] = f"0x{ep_rva:08X}"
+            result["entry_va"] = f"0x{entry_va:08X}"
             result["architecture"] = "x64" if is_64bit else "x86"
 
             # Locate raw offset of entry point
@@ -83,15 +95,27 @@ class CodeAnalyzer:
 
             instructions = []
             suspicious = []
-            va_start = image_base + ep_rva
+            call_targets = []
+            branch_hints = []
+            blocks_count = 1
+            va_start = entry_va
 
             for insn in md.disasm(code_bytes, va_start):
                 insn_str = f"0x{insn.address:08X}:  {insn.mnemonic:<8} {insn.op_str}"
                 instructions.append(insn_str)
 
+                # Control flow & branch hints
+                mnem = insn.mnemonic.lower()
+                if mnem == "call":
+                    call_targets.append({"address": f"0x{insn.address:08X}", "target": insn.op_str})
+                    blocks_count += 1
+                elif mnem.startswith("j") or mnem in ("ret", "retn", "hlt"):
+                    branch_hints.append({"address": f"0x{insn.address:08X}", "mnemonic": mnem, "target": insn.op_str})
+                    blocks_count += 1
+
                 # Heuristic patterns
                 # 1. Direct Syscall
-                if insn.mnemonic in ("syscall", "sysenter"):
+                if mnem in ("syscall", "sysenter"):
                     pattern = f"Direct Syscall invocation at 0x{insn.address:08X}"
                     suspicious.append(pattern)
                     self.evidence_store.create(
@@ -121,13 +145,22 @@ class CodeAnalyzer:
             result["status"] = "OBSERVED"
             result["instructions"] = instructions
             result["suspicious_patterns"] = suspicious
+            result["call_targets"] = call_targets
+            result["branch_hints"] = branch_hints
+            result["basic_blocks_estimated"] = blocks_count
 
             self.evidence_store.create(
                 artifact_name, "DISASSEMBLY", "entry_instructions", instructions[:10],
-                "CodeAnalyzer", provenance={"instruction_count": len(instructions)}
+                "CodeAnalyzer", provenance={
+                    "instruction_count": len(instructions),
+                    "entry_va": result["entry_va"],
+                    "entry_rva": result["entry_rva"],
+                    "call_targets_count": len(call_targets)
+                }
             )
 
         except Exception as e:
             result["warnings"].append(f"Disassembly failed: {e}")
 
         return result
+

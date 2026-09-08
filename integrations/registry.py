@@ -4,7 +4,7 @@ Implements a 3-tier capability architecture:
 Tier 1: Zero external tools (pefile, scapy, capstone, docx)
 Tier 2: Open-source optional tools (yara, ghidra, radare2, capa, pe-sieve)
 Tier 3: Proprietary optional tools (IDA Pro, x64dbg, WinDbg)
-Allows autosleuth doctor to assess environment health without crashing.
+Allows 0206 doctor to assess environment health without crashing.
 """
 import sys
 import shutil
@@ -105,6 +105,13 @@ class CapabilityRegistry:
             "tier": "Tier 2 (Open Source)",
             "status": pesieve_info["status"],
             "path": pesieve_info["path"]
+        }
+
+        floss_info = check_executable("floss")
+        capabilities["FLOSS"] = {
+            "tier": "Tier 2 (Open Source)",
+            "status": floss_info["status"],
+            "path": floss_info["path"]
         }
 
         # ---------------- Tier 3: Proprietary Optional ----------------

@@ -54,7 +54,7 @@ class GenericDOCXReportAdapter(BaseReportAdapter):
 
         overview_data = [
             ("Target Sample", manifest.get("sample_filename", "Unknown")),
-            ("File Size", f"{manifest.get('sample_size_bytes', 0):,} bytes"),
+            ("File Size", f"{(manifest.get('sample_size_bytes') or 0):,} bytes"),
             ("SHA256 Hash", manifest.get("sample_hashes", {}).get("sha256", "N/A")),
             ("Threat Assessment", f"{assessment.get('threat_level', 'UNKNOWN')} (Score: {assessment.get('threat_score', 0)}/100)"),
             ("Malware Family / Class", assessment.get("classification", "Generic")),
@@ -63,8 +63,8 @@ class GenericDOCXReportAdapter(BaseReportAdapter):
 
         for i, (label, val) in enumerate(overview_data):
             r = meta_table.rows[i]
-            r.cells[0].text = label
-            r.cells[1].text = val
+            r.cells[0].text = str(label or "")
+            r.cells[1].text = str(val if val is not None else "N/A")
             r.cells[0].paragraphs[0].runs[0].font.bold = True
             r.cells[0].paragraphs[0].runs[0].font.size = Pt(9.5)
             r.cells[1].paragraphs[0].runs[0].font.size = Pt(9.5)

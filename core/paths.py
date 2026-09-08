@@ -26,7 +26,7 @@ def get_template_path(custom_path: str = None) -> Path:
     """
     Resolves the report template path.
     1. Custom CLI path (if provided and exists)
-    2. Environment variable AUTOSLEUTH_TEMPLATE_PATH
+    2. Environment variable O206_TEMPLATE_PATH
     3. Built-in generic template inside repo
     """
     if custom_path:
@@ -35,7 +35,7 @@ def get_template_path(custom_path: str = None) -> Path:
             return p
         raise FileNotFoundError(f"Specified template file not found: {custom_path}")
 
-    env_path = os.getenv("AUTOSLEUTH_TEMPLATE_PATH")
+    env_path = os.getenv("O206_TEMPLATE_PATH") or os.getenv("AUTOSLEUTH_TEMPLATE_PATH")
     if env_path:
         p = Path(env_path)
         if p.exists():
@@ -50,7 +50,7 @@ def get_output_dir(custom_dir: str = None) -> Path:
     if custom_dir:
         p = Path(custom_dir)
     else:
-        env_dir = os.getenv("AUTOSLEUTH_OUTPUT_DIR")
+        env_dir = os.getenv("O206_OUTPUT_DIR") or os.getenv("AUTOSLEUTH_OUTPUT_DIR")
         p = Path(env_dir) if env_dir else (REPO_ROOT / "output")
     p.mkdir(parents=True, exist_ok=True)
     return p

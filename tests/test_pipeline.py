@@ -15,7 +15,8 @@ from reporter.docx_generator import FOR610ReportGenerator
 
 TESTS_DIR = Path(__file__).resolve().parent
 
-class TestAutoSleuthPipeline(unittest.TestCase):
+class Test0206Pipeline(unittest.TestCase):
+    """Integration test verifying dataflow and evidence generation."""
 
     def setUp(self):
         self.sample_pe = TESTS_DIR / "sample_benign_triage.exe"
