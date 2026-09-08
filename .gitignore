@@ -1,0 +1,18 @@
+# Môi trường ảo & Python cache
+venv/
+env/
+__pycache__/
+*.pyc
+
+# API keys & cấu hình bí mật
+.env
+config.json
+
+# File mẫu mã độc & dữ liệu phân tích nhạy cảm
+samples/
+malware_samples/
+*.exe
+*.dll
+*.pcap
+*.csv
+output_reports/

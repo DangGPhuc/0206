@@ -1,0 +1,8 @@
+"""
+Analyzer package initialization
+"""
+from analyzer.static import PEStaticAnalyzer
+from analyzer.behavioral import BehavioralAnalyzer
+from analyzer.api_hash_db import scan_binary_for_api_hashes, get_hash_database
+
+__all__ = ["PEStaticAnalyzer", "BehavioralAnalyzer", "scan_binary_for_api_hashes", "get_hash_database"]

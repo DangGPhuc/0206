@@ -1,0 +1,391 @@
+{
+  "static": {
+    "file_info": {
+      "file_name": "sample_benign_triage.exe",
+      "file_path": "/run/media/kali/New Volume/malware/AutoSleuth-Triage/tests/sample_benign_triage.exe",
+      "file_size": 44032,
+      "md5": "b21a75f432158ce439e9fa6fd5fde20a",
+      "sha1": "aa8d1f86f9246b5ad9d8fc24245023ce17615887",
+      "sha256": "8b7f1fd1be85e14d7de397138043c2a3c86d1d2590232c11304c873e558b98d4",
+      "overall_entropy": 5.8615,
+      "is_pe": true,
+      "is_signed": false,
+      "imphash": "159bb7e99ce1cc1e11a2f66728acec1d",
+      "compile_time": "2026-09-08 14:27:47 UTC",
+      "architecture": "64-bit (x64)",
+      "subsystem": "WINDOWS_CUI (Console)",
+      "entry_point": "0x00001440",
+      "image_base": "0x140000000"
+    },
+    "sections": [
+      {
+        "name": ".text",
+        "virtual_address": "0x00001000",
+        "virtual_size": 31616,
+        "raw_size": 31744,
+        "entropy": 6.2113,
+        "md5": "91787063cdfe59adf999545f812ab06b",
+        "permissions": "RX",
+        "is_rwx": false
+      },
+      {
+        "name": ".data",
+        "virtual_address": "0x00009000",
+        "virtual_size": 320,
+        "raw_size": 512,
+        "entropy": 1.3074,
+        "md5": "3ae3e387481e4231b8afad7a4ceb562c",
+        "permissions": "RW",
+        "is_rwx": false
+      },
+      {
+        "name": ".rdata",
+        "virtual_address": "0x0000A000",
+        "virtual_size": 4232,
+        "raw_size": 4608,
+        "entropy": 4.5232,
+        "md5": "a27027463ef6b5ccb7f43bd24a493953",
+        "permissions": "R",
+        "is_rwx": false
+      },
+      {
+        "name": ".pdata",
+        "virtual_address": "0x0000C000",
+        "virtual_size": 1152,
+        "raw_size": 1536,
+        "entropy": 3.3399,
+        "md5": "261997abbd487791c54ed3333661e8d7",
+        "permissions": "R",
+        "is_rwx": false
+      },
+      {
+        "name": ".xdata",
+        "virtual_address": "0x0000D000",
+        "virtual_size": 1024,
+        "raw_size": 1024,
+        "entropy": 4.1809,
+        "md5": "e08148dc49833ec3292cb85658bb1ddd",
+        "permissions": "R",
+        "is_rwx": false
+      },
+      {
+        "name": ".bss",
+        "virtual_address": "0x0000E000",
+        "virtual_size": 2960,
+        "raw_size": 0,
+        "entropy": 0.0,
+        "md5": "d41d8cd98f00b204e9800998ecf8427e",
+        "permissions": "RW",
+        "is_rwx": false
+      },
+      {
+        "name": ".edata",
+        "virtual_address": "0x0000F000",
+        "virtual_size": 92,
+        "raw_size": 512,
+        "entropy": 1.0532,
+        "md5": "b1bcdf2d0265986a2f4767ab77a5364d",
+        "permissions": "R",
+        "is_rwx": false
+      },
+      {
+        "name": ".idata",
+        "virtual_address": "0x00010000",
+        "virtual_size": 1844,
+        "raw_size": 2048,
+        "entropy": 3.7871,
+        "md5": "effd780f0a8432a7312e7bed61e13f92",
+        "permissions": "R",
+        "is_rwx": false
+      },
+      {
+        "name": ".tls",
+        "virtual_address": "0x00011000",
+        "virtual_size": 16,
+        "raw_size": 512,
+        "entropy": 0.0,
+        "md5": "bf619eac0cdf3f68d496ea9344137e8b",
+        "permissions": "RW",
+        "is_rwx": false
+      },
+      {
+        "name": ".reloc",
+        "virtual_address": "0x00012000",
+        "virtual_size": 136,
+        "raw_size": 512,
+        "entropy": 1.6374,
+        "md5": "0550cf5f9e9320edb9dd17c0944ef14a",
+        "permissions": "R",
+        "is_rwx": false
+      }
+    ],
+    "imports": {
+      "kernel32.dll": [
+        "DeleteCriticalSection",
+        "EnterCriticalSection",
+        "GetCPInfo",
+        "GetLastError",
+        "GetModuleHandleA",
+        "GetProcAddress",
+        "InitializeCriticalSection",
+        "LeaveCriticalSection",
+        "MultiByteToWideChar",
+        "SetUnhandledExceptionFilter",
+        "Sleep",
+        "TlsGetValue",
+        "VirtualProtect",
+        "VirtualQuery",
+        "WideCharToMultiByte"
+      ],
+      "msvcrt.dll": [
+        "__C_specific_handler",
+        "___lc_codepage_func",
+        "___mb_cur_max_func",
+        "__getmainargs",
+        "__initenv",
+        "__iob_func",
+        "__set_app_type",
+        "__setusermatherr",
+        "_amsg_exit",
+        "_cexit",
+        "_commode",
+        "_errno",
+        "_fmode",
+        "_initterm",
+        "_lock",
+        "_unlock",
+        "abort",
+        "atexit",
+        "calloc",
+        "exit",
+        "fflush",
+        "fprintf",
+        "fputc",
+        "free",
+        "localeconv",
+        "malloc",
+        "memcpy",
+        "puts",
+        "setvbuf",
+        "signal",
+        "strerror",
+        "strlen",
+        "strncmp",
+        "vfprintf",
+        "wcslen"
+      ]
+    },
+    "exports": [
+      {
+        "name": "TriageTestExport",
+        "ordinal": 1,
+        "address": "0x00001490"
+      }
+    ],
+    "detected_capabilities": {
+      "Dynamic API Resolution / Evasion (T1027)": [
+        "GetProcAddress"
+      ]
+    },
+    "api_hashing_matches": [
+      {
+        "api": "VirtualAlloc",
+        "algorithm": "djb2",
+        "hash_hex": "0x382C0F97",
+        "offset_hex": "0x00008200"
+      },
+      {
+        "api": "CreateProcessA",
+        "algorithm": "ROR13",
+        "hash_hex": "0x16B3FE72",
+        "offset_hex": "0x00008204"
+      },
+      {
+        "api": "LoadLibraryA",
+        "algorithm": "CRC32",
+        "hash_hex": "0x3FC1BD8D",
+        "offset_hex": "0x00008208"
+      },
+      {
+        "api": "WSAStartup",
+        "algorithm": "FNV-1a",
+        "hash_hex": "0x20125C5F",
+        "offset_hex": "0x0000820C"
+      }
+    ],
+    "packed_analysis": {
+      "is_packed": false,
+      "reasons": []
+    },
+    "strings_analysis": {
+      "urls": [
+        "http://malicious-c2.test/gate.php"
+      ],
+      "ips": [],
+      "registry_keys": [
+        "Software\\Microsoft\\Windows\\CurrentVersion\\Run",
+        "HKCU"
+      ],
+      "suspicious_commands": [
+        "HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Run",
+        "powershell.exe -ExecutionPolicy Bypass -Command Write-Host Triage"
+      ],
+      "total_strings_count": 607
+    },
+    "anomalies": [
+      "Detected 4 API Hashing constant(s) indicating hidden dynamic API resolution"
+    ],
+    "errors": []
+  },
+  "behavioral": {
+    "network": {
+      "dns_queries": [
+        {
+          "domain": "malicious-c2.test",
+          "resolved_ips": [
+            "198.51.100.45"
+          ]
+        }
+      ],
+      "http_requests": [
+        {
+          "method": "POST",
+          "uri": "/gate.php",
+          "host": "malicious-c2.test",
+          "user_agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AutoSleuth-Beacon/1.0",
+          "dst_ip": "198.51.100.45"
+        }
+      ],
+      "tls_sni": [],
+      "remote_ips": [
+        {
+          "ip": "8.8.8.8",
+          "count": 1
+        },
+        {
+          "ip": "192.168.1.105",
+          "count": 1
+        },
+        {
+          "ip": "198.51.100.45",
+          "count": 1
+        }
+      ],
+      "c2_beacons": [],
+      "packet_count": 3
+    },
+    "host_behavior": {
+      "dropped_files": [
+        {
+          "process": "sample_benign_triage.exe",
+          "path": "C:\\Users\\Analyst\\AppData\\Local\\Temp\\dropped_payload.exe",
+          "operation": "CreateFile"
+        },
+        {
+          "process": "sample_benign_triage.exe",
+          "path": "C:\\Users\\Analyst\\AppData\\Local\\Temp\\dropped_payload.exe",
+          "operation": "WriteFile"
+        }
+      ],
+      "persistence_registry": [
+        {
+          "process": "sample_benign_triage.exe",
+          "key_path": "HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Run",
+          "operation": "RegCreateKey",
+          "detail": "Desired Access: Set Value"
+        },
+        {
+          "process": "sample_benign_triage.exe",
+          "key_path": "HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Run\\WinSecurityUpdate",
+          "operation": "RegSetValue",
+          "detail": "Type: REG_SZ, Length: 120, Data: C:\\Users\\Analyst\\AppData\\Local\\Temp\\dropped_payload.exe"
+        }
+      ],
+      "spawned_processes": [
+        {
+          "parent_process": "sample_benign_triage.exe",
+          "command_line": "PID: 4980, Command line: cmd.exe /c whoami /all",
+          "path": "C:\\Windows\\System32\\cmd.exe"
+        }
+      ],
+      "suspicious_file_ops": []
+    },
+    "regshot": {
+      "keys_added": [],
+      "values_added": [],
+      "files_added": []
+    },
+    "errors": []
+  },
+  "ai_synthesis": {
+    "threat_level": "CRITICAL",
+    "threat_score": 100,
+    "malware_family": "Trojan.Downloader",
+    "executive_summary": "Automated static and behavioral triage indicates this sample is a CRITICAL threat (Score: 100/100) identified as Trojan.Downloader. The binary exhibits capabilities for Dynamic API Resolution / Evasion (T1027). Host and network telemetry reveal active persistence establishment and outbound C2 connectivity.",
+    "key_functionality": "1. Evasion & Defense: Packed structure (No), API Hashing (4 constants identified). 2. Execution & Injection: Standard user-mode process execution. 3. C2 Infrastructure: 4 network indicators identified across DNS and HTTP protocols.",
+    "purpose": "Attacker objective focuses on establishing an initial persistence footprint on the endpoint, evading standard EDR/AV static detection via dynamic API resolution, and opening a reverse C2 communication channel.",
+    "persistence": "Registry Run Keys / Autostart modifications identified: HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Run; HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Run\\WinSecurityUpdate",
+    "environment_impact": "High risk of enterprise lateral movement, credential access, and persistent C2 staging. May permit remote execution of arbitrary payloads on compromised endpoint.",
+    "root_cause": "Likely distributed via spear-phishing attachment, malicious download, or secondary payload delivery.",
+    "attribution": "Unattributed / Generic Commercial Cybercrime Tooling",
+    "mitre_attack": [
+      {
+        "technique_id": "T1027.007",
+        "technique_name": "Dynamic API Resolution",
+        "tactic": "Defense Evasion",
+        "evidence": "Embedded API hash constants detected: VirtualAlloc (djb2), CreateProcessA (ROR13), LoadLibraryA (CRC32), WSAStartup (FNV-1a)"
+      },
+      {
+        "technique_id": "T1071",
+        "technique_name": "Application Layer Protocol",
+        "tactic": "Command and Control",
+        "evidence": "Outbound network beacons observed (1 DNS queries, 1 HTTP requests)"
+      },
+      {
+        "technique_id": "T1105",
+        "technique_name": "Ingress Tool Transfer",
+        "tactic": "Command and Control",
+        "evidence": "Executable written to disk: C:\\Users\\Analyst\\AppData\\Local\\Temp\\dropped_payload.exe"
+      },
+      {
+        "technique_id": "T1105",
+        "technique_name": "Ingress Tool Transfer",
+        "tactic": "Command and Control",
+        "evidence": "Executable written to disk: C:\\Users\\Analyst\\AppData\\Local\\Temp\\dropped_payload.exe"
+      },
+      {
+        "technique_id": "T1547.001",
+        "technique_name": "Registry Run Keys / Startup Folder",
+        "tactic": "Persistence",
+        "evidence": "Registry Run key modified: HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Run"
+      },
+      {
+        "technique_id": "T1547.001",
+        "technique_name": "Registry Run Keys / Startup Folder",
+        "tactic": "Persistence",
+        "evidence": "Registry Run key modified: HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Run\\WinSecurityUpdate"
+      }
+    ],
+    "key_iocs": {
+      "host_iocs": [
+        "Persistence Registry: HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Run (Desired Access: Set Value)",
+        "SHA256: 8b7f1fd1be85e14d7de397138043c2a3c86d1d2590232c11304c873e558b98d4",
+        "Imphash: 159bb7e99ce1cc1e11a2f66728acec1d",
+        "Persistence Registry: HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Run\\WinSecurityUpdate (Type: REG_SZ, Length: 120, Data: C:\\Users\\Analyst\\AppData\\Local\\Temp\\dropped_payload.exe)",
+        "Dropped File: C:\\Users\\Analyst\\AppData\\Local\\Temp\\dropped_payload.exe"
+      ],
+      "network_iocs": [
+        "Resolved IP: 198.51.100.45 (malicious-c2.test)",
+        "DNS Query: malicious-c2.test",
+        "HTTP POST: http://malicious-c2.test/gate.php",
+        "User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AutoSleuth-Beacon/1.0"
+      ]
+    },
+    "incident_recommendations": [
+      "Immediately isolate the affected workstation from the corporate network.",
+      "Block observed network IOCs on perimeter firewalls and DNS sinkholes (DNS Query: malicious-c2.test, Resolved IP: 198.51.100.45 (malicious-c2.test), HTTP POST: http://malicious-c2.test/gate.php).",
+      "Delete persistence registry keys and remove any dropped executable binaries from AppData/Temp.",
+      "Perform enterprise-wide EDR threat hunting using the generated file SHA256 and imphash."
+    ]
+  }
+}
