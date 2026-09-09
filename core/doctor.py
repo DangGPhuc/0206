@@ -148,6 +148,8 @@ def run_doctor(console: Console) -> bool:
         f"[dim]Environment Specs:[/dim]\n"
         f"  • Python: {sys.version.split()[0]} | Platform: {platform.system()} ({platform.machine()})\n"
         f"  • Privacy Mode: strict (default) | Default AI: offline (deterministic)\n"
+        f"  • Execution Safety: Bounded External Tool Execution (shell=False, process-group timeout cleanup)\n"
+        f"  • OS-level Static Tool Sandbox: [dim yellow]NOT_IMPLEMENTED[/dim yellow] (host boundary execution)\n"
         f"  • Evidence Model: Canonical 3-Tier (EvidenceRecord -> Finding -> Assessment)\n"
         f"  • Template Mode: Built-in Generic (User-provided DOCX supported via --template)"
     )

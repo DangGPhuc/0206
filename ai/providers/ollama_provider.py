@@ -1,5 +1,7 @@
 """
 0206 - Ollama Local Provider
+Phase 17: Local Ollama provider via OpenAI-compatible endpoints.
+Enforces credential isolation: operates strictly locally, never consumes OpenAI/Anthropic credentials.
 """
 import os
 import json
@@ -11,7 +13,7 @@ from ai.providers.base import AIProvider
 
 
 class OllamaProvider(AIProvider):
-    """Local Ollama provider via OpenAI-compatible endpoints."""
+    """Local Ollama provider via local OpenAI-compatible endpoints."""
 
     def __init__(
         self,
@@ -19,7 +21,13 @@ class OllamaProvider(AIProvider):
         model: Optional[str] = None,
         privacy_mode: str = "strict"
     ):
-        self.api_base = api_base or os.getenv("OLLAMA_API_BASE", "http://localhost:11434/v1")
+        # Local endpoint only, never consumes cloud API keys
+        endpoint = api_base or os.getenv("OLLAMA_API_BASE") or os.getenv("OLLAMA_HOST")
+        if endpoint and not endpoint.startswith("http"):
+            endpoint = f"http://{endpoint}"
+        if endpoint and not endpoint.endswith("/v1"):
+            endpoint = f"{endpoint.rstrip('/')}/v1"
+        self.api_base = endpoint or "http://localhost:11434/v1"
         self.model = model or os.getenv("OLLAMA_MODEL", "llama3")
         self.redactor = PrivacyRedactor(mode=privacy_mode)
 
@@ -32,18 +40,25 @@ class OllamaProvider(AIProvider):
 
     def synthesize(
         self,
-        evidence_store: EvidenceStore,
-        findings: List[Finding],
-        system_prompt: str,
-        user_prompt: str,
+        request: Optional[Any] = None,
+        evidence_store: Optional[EvidenceStore] = None,
+        findings: Optional[List[Finding]] = None,
+        system_prompt: Optional[str] = None,
+        user_prompt: Optional[str] = None,
+        **kwargs
     ) -> Dict[str, Any]:
         from openai import OpenAI
+
+        sys_prompt = getattr(request, "system_prompt", None) or system_prompt or ""
+        usr_prompt = getattr(request, "user_prompt", None) or user_prompt or ""
+        req_model = getattr(request, "model", None) or self.model
+
         client = OpenAI(base_url=self.api_base, api_key="ollama")
         response = client.chat.completions.create(
-            model=self.model,
+            model=req_model,
             messages=[
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_prompt}
+                {"role": "system", "content": sys_prompt},
+                {"role": "user", "content": usr_prompt}
             ],
             temperature=0.1,
             response_format={"type": "json_object"}

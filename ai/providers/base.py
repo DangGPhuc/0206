@@ -3,9 +3,12 @@
 Phase 17: Provider interface for optional AI synthesis.
 """
 from abc import ABC, abstractmethod
-from typing import Dict, Any, List, Optional
+from typing import Dict, Any, List, Optional, Union, TYPE_CHECKING
 from core.evidence import EvidenceStore
 from core.findings import Finding
+
+if TYPE_CHECKING:
+    from ai.schema import SanitizedAIRequest
 
 
 class AIProvider(ABC):
@@ -23,10 +26,12 @@ class AIProvider(ABC):
     @abstractmethod
     def synthesize(
         self,
-        evidence_store: EvidenceStore,
-        findings: List[Finding],
-        system_prompt: str,
-        user_prompt: str,
+        request: Optional[Any] = None,
+        evidence_store: Optional[EvidenceStore] = None,
+        findings: Optional[List[Finding]] = None,
+        system_prompt: Optional[str] = None,
+        user_prompt: Optional[str] = None,
+        **kwargs
     ) -> Dict[str, Any]:
-        """Queries provider with privacy-sanitized inputs and returns parsed JSON."""
+        """Queries provider with allowlisted sanitized request or legacy parameters."""
         pass

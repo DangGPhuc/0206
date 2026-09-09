@@ -37,6 +37,12 @@ jobs:
       run: |
         python -m compileall .
 
+    - name: Security Static Analysis & Ruff Lint
+      run: |
+        python -m pip install ruff bandit
+        ruff check core/ ai/ analyzers/ reporting/ --select E9,F63,F7,F82
+        bandit -r core/ analyzers/ ai/ -s B101,B404,B603,B110,B310 --quiet
+
     - name: Supply-Chain & Data Guard Audit
       run: |
         python scripts/precommit_data_guard.py

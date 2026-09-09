@@ -2,7 +2,7 @@
 0206 - Offline Deterministic AI Provider
 Phase 17: Default fallback provider that operates completely offline with zero network calls.
 """
-from typing import Dict, Any, List
+from typing import Dict, Any, List, Optional
 from core.evidence import EvidenceStore
 from core.findings import Finding
 from ai.providers.base import AIProvider
@@ -20,14 +20,49 @@ class OfflineAIProvider(AIProvider):
 
     def synthesize(
         self,
-        evidence_store: EvidenceStore,
-        findings: List[Finding],
-        system_prompt: str,
-        user_prompt: str,
+        request: Optional[Any] = None,
+        evidence_store: Optional[EvidenceStore] = None,
+        findings: Optional[List[Finding]] = None,
+        system_prompt: Optional[str] = None,
+        user_prompt: Optional[str] = None,
+        **kwargs
     ) -> Dict[str, Any]:
-        high_findings = [f for f in findings if f.confidence >= 0.7]
+        req_findings = getattr(request, "findings", None) if request else None
+        target_findings = findings or []
+
+        # If findings were passed inside SanitizedAIRequest as dicts
+        if not target_findings and req_findings:
+            high_findings = [f for f in req_findings if f.get("confidence", 0) >= 0.7]
+            hypotheses = []
+            for h in high_findings[:5]:
+                hypotheses.append({
+                    "claim": f"High confidence indicator: {h.get('title', '')}",
+                    "confidence": h.get("confidence", 0.0),
+                    "supported_by_evidence_ids": h.get("evidence_ids", []),
+                    "domain": str(h.get("domain", "")),
+                    "why_it_matters": h.get("why_it_matters", ""),
+                })
+            narrative = (
+                f"Deterministic analysis completed across {len(req_findings)} correlated findings. "
+                f"Identified {len(high_findings)} prominent indicators of interest."
+            )
+            return {
+                "executive_summary": narrative,
+                "hypotheses": hypotheses,
+                "behavioral_claims": [],
+                "mitre_attack_mappings": [
+                    {"technique_id": f.get("mitre_attack_id"), "evidence_id": f.get("evidence_ids", [""])[0]}
+                    for f in req_findings if f.get("mitre_attack_id") and f.get("evidence_ids")
+                ],
+                "limitations_identified": [
+                    "Offline deterministic analysis mode utilized; no external LLM heuristics invoked.",
+                    "Observations restricted to supplied static and dynamic evidence artifacts."
+                ]
+            }
+
+        high_findings_objs = [f for f in target_findings if f.confidence >= 0.7]
         hypotheses = []
-        for h in high_findings[:5]:
+        for h in high_findings_objs[:5]:
             hypotheses.append({
                 "claim": f"High confidence indicator: {h.title}",
                 "confidence": h.confidence,
@@ -37,8 +72,8 @@ class OfflineAIProvider(AIProvider):
             })
 
         narrative = (
-            f"Deterministic analysis completed across {len(findings)} correlated findings. "
-            f"Identified {len(high_findings)} prominent indicators of interest."
+            f"Deterministic analysis completed across {len(target_findings)} correlated findings. "
+            f"Identified {len(high_findings_objs)} prominent indicators of interest."
         )
 
         return {
@@ -47,7 +82,7 @@ class OfflineAIProvider(AIProvider):
             "behavioral_claims": [],
             "mitre_attack_mappings": [
                 {"technique_id": f.mitre_attack_id, "evidence_id": f.evidence_ids[0]}
-                for f in findings if f.mitre_attack_id and f.evidence_ids
+                for f in target_findings if f.mitre_attack_id and f.evidence_ids
             ],
             "limitations_identified": [
                 "Offline deterministic analysis mode utilized; no external LLM heuristics invoked.",

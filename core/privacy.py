@@ -103,6 +103,26 @@ class PrivacyRedactor:
         self._api_key_re = re.compile(r'\b(sk-[a-zA-Z0-9_\-]{20,}|sk-ant-[a-zA-Z0-9_\-]{20,}|(?:api[_-]?key|access[_-]?token)[\s:=]+[\'"][a-zA-Z0-9_\-]{16,}[\'"])\b', re.IGNORECASE)
         # 12. Combined secret pattern for quick scanning
         self._secret_re = re.compile(r'(sk-[a-zA-Z0-9_\-]{20,}|sk-ant-[a-zA-Z0-9_\-]{20,}|Bearer\s+[a-zA-Z0-9_\-\.]{20,}|(?:api[_-]?key|password|secret)[\s:=]+[\'\"][^\'\"]+[\'\"])', re.IGNORECASE)
+        # 13. Test, confidential, or classified markers (e.g. TOP_SECRET_TEST_0206_A91F)
+        self._marker_re = re.compile(r'\b(?:TOP_SECRET|CONFIDENTIAL|CLASSIFIED|SECRET)_[A-Za-z0-9_]+\b', re.IGNORECASE)
+        # 14. Generic tokens / fake API tokens
+        self._generic_token_re = re.compile(r'\b(?:fake|test|dummy)?[_-]?(?:api[_-]?token|api[_-]?key|secret[_-]?token|auth[_-]?token)[_-]?[a-zA-Z0-9_\-]{8,}\b', re.IGNORECASE)
+
+        # Custom sensitive terms and patterns registered by caller or test fixtures
+        self.custom_sensitive_terms: Set[str] = set()
+        self.custom_sensitive_patterns: List[re.Pattern] = []
+
+    def add_sensitive_term(self, term: str) -> None:
+        """Registers a custom literal term (e.g. internal secret or token) to scrub."""
+        if term and len(term.strip()) > 0:
+            self.custom_sensitive_terms.add(term.strip())
+
+    def add_sensitive_pattern(self, pattern: Union[str, re.Pattern]) -> None:
+        """Registers a custom regular expression pattern to scrub."""
+        if isinstance(pattern, str):
+            self.custom_sensitive_patterns.append(re.compile(pattern, re.IGNORECASE))
+        else:
+            self.custom_sensitive_patterns.append(pattern)
 
     def _harvest_usernames(self, data: Any):
         """Scans input structure to register any username patterns for full text scrubbing."""
@@ -139,6 +159,14 @@ class PrivacyRedactor:
         text = self._secret_re.sub(r'[REDACTED_SECRET]', text)
         text = self._bearer_re.sub(r'Bearer [REDACTED_BEARER_TOKEN]', text)
         text = self._api_key_re.sub(r'[REDACTED_API_KEY]', text)
+        text = self._marker_re.sub(r'[REDACTED_SECRET]', text)
+        text = self._generic_token_re.sub(r'[REDACTED_API_KEY]', text)
+
+        for term in self.custom_sensitive_terms:
+            if term:
+                text = re.sub(rf'\b{re.escape(term)}\b', '[REDACTED_SENSITIVE]', text, flags=re.IGNORECASE)
+        for pat in self.custom_sensitive_patterns:
+            text = pat.sub(r'[REDACTED_SENSITIVE]', text)
 
         # Harvest user identity if present in paths
         for m in self._win_user_re.finditer(text):
@@ -236,6 +264,16 @@ class PrivacyRedactor:
                 violations.append(f"Unredacted API key found at {path_prefix}")
             if self._secret_re.search(val) and "[REDACTED_SECRET]" not in val and "[REDACTED_API_KEY]" not in val:
                 violations.append(f"Unredacted secret or token found at {path_prefix}")
+            if self._marker_re.search(val) and "[REDACTED_SECRET]" not in val:
+                violations.append(f"Unredacted sensitive marker found at {path_prefix}")
+            if self._generic_token_re.search(val) and "[REDACTED_API_KEY]" not in val:
+                violations.append(f"Unredacted token found at {path_prefix}")
+            for term in self.custom_sensitive_terms:
+                if term and re.search(rf'\b{re.escape(term)}\b', val, re.IGNORECASE) and "[REDACTED_SENSITIVE]" not in val:
+                    violations.append(f"Unredacted custom sensitive term '{term}' found at {path_prefix}")
+            for pat in self.custom_sensitive_patterns:
+                if pat.search(val) and "[REDACTED_SENSITIVE]" not in val:
+                    violations.append(f"Unredacted sensitive pattern match found at {path_prefix}")
 
             if self.mode == PrivacyMode.STRICT:
                 if self._win_user_re.search(val) and "<REDACTED_USER>" not in val:

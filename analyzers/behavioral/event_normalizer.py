@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Dict, List, Any, Optional
 
 from enum import Enum
-from config import MAX_LOG_ROWS
+from config import MAX_LOG_ROWS, MAX_REGSHOT_SIZE, MAX_REGSHOT_LINES
 from analyzers.contract import AnalyzerContract, AnalysisStage, AnalyzerSafetyLevel
 from core.schemas import (
     AnalysisDomain, EvidenceState, EventType,
@@ -413,6 +413,12 @@ class BehavioralAnalyzer(AnalyzerContract):
 
     def _parse_regshot(self, file_path: Path) -> Dict[str, Any]:
         """Parses standard Regshot plaintext diff into normalized registry events."""
+        if file_path.stat().st_size > MAX_REGSHOT_SIZE:
+            self.warnings.append(
+                f"Regshot diff log size ({file_path.stat().st_size} bytes) exceeds MAX_REGSHOT_SIZE ({MAX_REGSHOT_SIZE} bytes). Analysis skipped."
+            )
+            return {"keys_modified": []}
+
         hashes = hash_file_streaming(file_path)
         sha256 = hashes.get("sha256", "UNKNOWN")
         artifact_name = file_path.name
@@ -425,6 +431,12 @@ class BehavioralAnalyzer(AnalyzerContract):
             with open(file_path, "r", encoding="utf-8", errors="ignore") as f:
                 for line in f:
                     line_idx += 1
+                    if line_idx > MAX_REGSHOT_LINES:
+                        self.warnings.append(
+                            f"Reached MAX_REGSHOT_LINES ({MAX_REGSHOT_LINES}) limit on Regshot diff. Truncated parsing."
+                        )
+                        break
+
                     sline = line.strip()
                     if not sline:
                         continue

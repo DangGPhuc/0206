@@ -17,6 +17,7 @@ import time
 from pydantic import BaseModel, Field, ConfigDict
 
 from core.evidence import EvidenceStore, EvidenceRecord, EvidenceState
+from core.manifest import hash_file_streaming
 
 
 import hashlib
@@ -49,9 +50,14 @@ class GeneratedArtifact(BaseModel):
     @classmethod
     def from_file(cls, path: Path, source_tool: str, tool_version: Optional[str] = None) -> "GeneratedArtifact":
         p = Path(path)
-        content = p.read_bytes() if p.exists() else b""
-        sha256 = hashlib.sha256(content).hexdigest()
-        size = len(content)
+        if p.exists() and p.is_file():
+            hashes = hash_file_streaming(p)
+            sha256 = hashes.get("sha256", hashlib.sha256(b"").hexdigest())
+            size = p.stat().st_size
+        else:
+            sha256 = hashlib.sha256(b"").hexdigest()
+            size = 0
+
         return cls(
             artifact_id=f"art-{uuid.uuid4().hex[:12]}",
             path=str(p.resolve()),

@@ -1,5 +1,7 @@
 """
 0206 - OpenAI-Compatible AI Provider
+Phase 17: Provider implementation for OpenAI-compatible APIs.
+Enforces credential isolation: only inspects OPENAI_API_KEY, OPENAI_MODEL, OPENAI_API_BASE.
 """
 import os
 import json
@@ -20,6 +22,7 @@ class OpenAIProvider(AIProvider):
         model: Optional[str] = None,
         privacy_mode: str = "strict"
     ):
+        # Strictly isolated: only OpenAI credentials/models
         self.api_key = api_key or os.getenv("OPENAI_API_KEY", "")
         self.api_base = api_base or os.getenv("OPENAI_API_BASE", "")
         self.model = model or os.getenv("OPENAI_MODEL", "gpt-4o")
@@ -34,22 +37,29 @@ class OpenAIProvider(AIProvider):
 
     def synthesize(
         self,
-        evidence_store: EvidenceStore,
-        findings: List[Finding],
-        system_prompt: str,
-        user_prompt: str,
+        request: Optional[Any] = None,
+        evidence_store: Optional[EvidenceStore] = None,
+        findings: Optional[List[Finding]] = None,
+        system_prompt: Optional[str] = None,
+        user_prompt: Optional[str] = None,
+        **kwargs
     ) -> Dict[str, Any]:
         from openai import OpenAI
+
+        sys_prompt = getattr(request, "system_prompt", None) or system_prompt or ""
+        usr_prompt = getattr(request, "user_prompt", None) or user_prompt or ""
+        req_model = getattr(request, "model", None) or self.model
+
         client_kwargs: Dict[str, Any] = {"api_key": self.api_key}
         if self.api_base:
             client_kwargs["base_url"] = self.api_base
 
         client = OpenAI(**client_kwargs)
         response = client.chat.completions.create(
-            model=self.model,
+            model=req_model,
             messages=[
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_prompt}
+                {"role": "system", "content": sys_prompt},
+                {"role": "user", "content": usr_prompt}
             ],
             temperature=0.1,
             response_format={"type": "json_object"}

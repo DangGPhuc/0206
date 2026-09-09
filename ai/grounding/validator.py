@@ -202,6 +202,7 @@ class GroundingValidator:
         mitre_entries = ai_dict.get("mitre_attack") or ai_dict.get("mitre_techniques") or []
         for t in mitre_entries:
             eids = t.get("evidence_ids", [])
+            phantom_eids = [eid for eid in eids if not self.evidence_store.get(eid)]
             valid_eids = [eid for eid in eids if self.evidence_store.get(eid)]
             tech_id = t.get("technique_id", "")
             tech_prefix = tech_id.split(".")[0] if tech_id else ""
@@ -230,13 +231,14 @@ class GroundingValidator:
                         continue
                 relevant_eids.append(eid)
 
+            rejected_eids = phantom_eids + irrelevant_eids
             if relevant_eids:
                 t["evidence_ids"] = relevant_eids
                 validated_mitre.append(t)
-                if irrelevant_eids:
+                if rejected_eids:
                     add_decision(
                         f"mitre_technique_{tech_id}", AIFieldStatus.DOWNGRADED,
-                        f"Technique cited verified evidence IDs {relevant_eids}; rejected irrelevant IDs {irrelevant_eids}.",
+                        f"Technique cited verified evidence IDs {relevant_eids}; rejected missing/phantom IDs {phantom_eids} and irrelevant IDs {irrelevant_eids}.",
                         eids, relevant_eids
                     )
                 else:

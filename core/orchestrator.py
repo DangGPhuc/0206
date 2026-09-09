@@ -36,8 +36,10 @@ from core.resource_policy import ResourcePolicy
 from core.profiles import ProfileName, get_profile
 from core.evidence import EvidenceStore
 from core.findings import FindingEngine, Finding, Assessment
+from core.schemas import TransmissionMode
 from core.manifest import AnalysisManifest
 from core.privacy import PrivacyMode, PrivacyRedactor, BLOCK_REMOTE_TRANSMISSION, DLPStatus
+from core.atomic_io import atomic_write_json, atomic_write_text, set_posix_permissions
 from core.validators import validate_finding_evidence_grounding
 from integrations.registry import CapabilityRegistry
 
@@ -149,6 +151,10 @@ class AnalysisOrchestrator:
             ok, err = self.resource_policy.check_procmon(p_procmon)
             if not ok:
                 warnings.append(err or "Procmon resource limit exceeded")
+        if p_regshot:
+            ok, err = self.resource_policy.check_regshot(p_regshot)
+            if not ok:
+                warnings.append(err or "Regshot resource limit exceeded")
 
         # -------------------------------------------------------------
         # 2. MANIFEST & OUTPUT DIRECTORY INITIALIZATION
@@ -191,6 +197,7 @@ class AnalysisOrchestrator:
             base_out = get_output_dir()
             out_dir = base_out / manifest.case_id
         out_dir.mkdir(parents=True, exist_ok=True)
+        set_posix_permissions(out_dir, 0o700)
         manifest.resource_limits = {
             "max_sample_size": self.resource_policy.max_sample_size,
             "max_pcap_size": self.resource_policy.max_pcap_size,
@@ -345,21 +352,26 @@ class AnalysisOrchestrator:
         notify("Enforcing privacy/DLP security boundary...", 10)
 
         # Resolve provider and API key from argument or environment variables
-        effective_key = api_key or os.getenv("OPENAI_API_KEY") or os.getenv("ANTHROPIC_API_KEY")
-        is_remote = False
         llm_provider = "offline"
+        transmission_mode = TransmissionMode.OFFLINE
+        effective_key = None
 
         if not (offline or prof_cfg.force_offline_ai):
-            if effective_key:
-                llm_provider = "openai" if (api_key or os.getenv("OPENAI_API_KEY")) else "anthropic"
-                is_remote = True
-            elif os.getenv("OLLAMA_HOST") or os.getenv("OPENAI_API_BASE"):
+            if api_key or os.getenv("OPENAI_API_KEY"):
+                llm_provider = "openai"
+                effective_key = api_key or os.getenv("OPENAI_API_KEY")
+                transmission_mode = TransmissionMode.REMOTE_SERVICE
+            elif os.getenv("ANTHROPIC_API_KEY"):
+                llm_provider = "anthropic"
+                effective_key = os.getenv("ANTHROPIC_API_KEY")
+                transmission_mode = TransmissionMode.REMOTE_SERVICE
+            elif os.getenv("OLLAMA_HOST") or os.getenv("OLLAMA_API_BASE"):
                 llm_provider = "ollama"
-                is_remote = True
+                transmission_mode = TransmissionMode.LOCAL_SERVICE
 
-        if is_remote:
+        if transmission_mode == TransmissionMode.REMOTE_SERVICE:
             evidence_summary = evidence_store.to_dict()
-            sanitized_evidence = privacy_redactor.redact(evidence_summary)
+            sanitized_evidence = privacy_redactor.redact(evidence_summary[:50])
             sanitized_findings = privacy_redactor.redact([f.model_dump() for f in validated_findings])
             transmission_payload = {
                 "provider": llm_provider,
@@ -375,6 +387,7 @@ class AnalysisOrchestrator:
                     f"Blocked remote transmission; fallback to offline AI."
                 )
                 llm_provider = "offline"
+                transmission_mode = TransmissionMode.OFFLINE
                 effective_key = None
 
         manifest.ai_mode = llm_provider
@@ -396,9 +409,10 @@ class AnalysisOrchestrator:
             "prompt_version": "1.0.0",
             "analysis_timestamp": datetime.now(timezone.utc).isoformat(),
             "privacy_mode": privacy_mode,
-            "remote_mode": "remote" if is_remote else "local",
+            "remote_mode": transmission_mode.value,
             "validation_status": getattr(assessment, "validation_status", "VALIDATED")
         }
+
         manifest.configuration_hash = hashlib.sha256(
             f"{profile}:{privacy_mode}:{offline}:{adaptive}:{portable}".encode("utf-8")
         ).hexdigest()[:16]
@@ -449,6 +463,13 @@ class AnalysisOrchestrator:
                 "derivation_rule": ", ".join(sorted(rules)) if rules else "Direct observation"
             })
 
+        # Create sanitized views before ANY default public export (Priority 3)
+        safe_static_data = privacy_redactor.redact(static_data)
+        safe_code_data = privacy_redactor.redact(code_data)
+        safe_behavioral_data = privacy_redactor.redact(behavioral_data)
+        safe_reputation_data = privacy_redactor.redact(manifest.reputation or {})
+        safe_artifacts_meta = privacy_redactor.redact(manifest.artifacts)
+
         session_payload = {
             "manifest": manifest.model_dump(),
             "assessment": assessment.model_dump(),
@@ -457,9 +478,9 @@ class AnalysisOrchestrator:
             "evidence_appendix": evidence_appendix,
             "coverage": assessment.coverage,
             "raw_telemetry": {
-                "static": static_data,
-                "code_analysis": code_data,
-                "behavioral": behavioral_data
+                "static": safe_static_data,
+                "code_analysis": safe_code_data,
+                "behavioral": safe_behavioral_data
             }
         }
         sanitized_payload = privacy_redactor.redact(session_payload)
@@ -477,43 +498,44 @@ class AnalysisOrchestrator:
 
         for d in (dir_input, dir_reputation, dir_basic, dir_advanced, dir_evidence, dir_report, dir_manifest):
             d.mkdir(parents=True, exist_ok=True)
+            set_posix_permissions(d, 0o700)
 
         # Save input metadata (do NOT copy original sample binary unless requested)
         input_meta_file = dir_input / "input_metadata.json"
-        with open(input_meta_file, "w", encoding="utf-8") as f:
-            f.write(json.dumps(manifest.artifacts, indent=2))
+        atomic_write_json(input_meta_file, safe_artifacts_meta)
 
         # Save reputation raw stage output
         rep_file = dir_reputation / "reputation.json"
-        with open(rep_file, "w", encoding="utf-8") as f:
-            f.write(json.dumps(manifest.reputation or {}, indent=2))
+        atomic_write_json(rep_file, safe_reputation_data)
 
         # Save basic triage summary
         basic_file = dir_basic / "basic_triage.json"
-        with open(basic_file, "w", encoding="utf-8") as f:
-            f.write(json.dumps({
-                "static": static_data.get("file_info", {}),
-                "sections_count": len(static_data.get("sections", [])),
-                "imports_count": len(static_data.get("imports", {}))
-            }, indent=2))
+        atomic_write_json(basic_file, {
+            "static": safe_static_data.get("file_info", {}),
+            "sections_count": len(safe_static_data.get("sections", [])),
+            "imports_count": len(safe_static_data.get("imports", {}))
+        })
 
         # Save advanced triage summary
         adv_file = dir_advanced / "advanced_triage.json"
-        with open(adv_file, "w", encoding="utf-8") as f:
-            f.write(json.dumps({
-                "code_analysis": code_data,
-                "behavioral_events": len(behavioral_data.get("normalized_events", []))
-            }, indent=2))
+        atomic_write_json(adv_file, {
+            "code_analysis": safe_code_data,
+            "behavioral_events": len(safe_behavioral_data.get("normalized_events", []))
+        })
 
         # 1. JSON Report
         report_json_path = out_dir / "report.json"
         JSONReportAdapter().render(sanitized_payload, report_json_path)
         JSONReportAdapter().render(sanitized_payload, dir_report / "report.json")
+        set_posix_permissions(report_json_path, 0o600)
+        set_posix_permissions(dir_report / "report.json", 0o600)
 
         # 2. Markdown Report
         report_md_path = out_dir / "report.md"
         MarkdownReportAdapter().render(sanitized_payload, report_md_path)
         MarkdownReportAdapter().render(sanitized_payload, dir_report / "report.md")
+        set_posix_permissions(report_md_path, 0o600)
+        set_posix_permissions(dir_report / "report.md", 0o600)
 
         # 3. DOCX Report (Generic built-in or user-provided template adapter)
         report_docx_path = out_dir / "report.docx"
@@ -533,52 +555,40 @@ class AnalysisOrchestrator:
 
         docx_adapter.render(sanitized_payload, report_docx_path)
         docx_adapter.render(sanitized_payload, dir_report / "report.docx")
+        set_posix_permissions(report_docx_path, 0o600)
+        set_posix_permissions(dir_report / "report.docx", 0o600)
 
         # 4. Evidence Store JSON export - Privacy-Safe by default (Phase 4)
         evidence_json_path = out_dir / "evidence.json"
         sanitized_evidence_records = privacy_redactor.redact(evidence_store.to_dict())
-        evidence_json_text = json.dumps(sanitized_evidence_records, indent=2)
-        with open(evidence_json_path, "w", encoding="utf-8") as f:
-            f.write(evidence_json_text)
-        with open(dir_evidence / "evidence.json", "w", encoding="utf-8") as f:
-            f.write(evidence_json_text)
+        atomic_write_json(evidence_json_path, sanitized_evidence_records)
+        atomic_write_json(dir_evidence / "evidence.json", sanitized_evidence_records)
 
         # 5. Findings JSON export - Privacy-Safe by default (Phase 4)
         findings_json_path = out_dir / "findings.json"
         sanitized_findings_records = privacy_redactor.redact([f.model_dump() for f in validated_findings])
-        findings_json_text = json.dumps(sanitized_findings_records, indent=2)
-        with open(findings_json_path, "w", encoding="utf-8") as f:
-            f.write(findings_json_text)
-        with open(dir_report / "findings.json", "w", encoding="utf-8") as f:
-            f.write(findings_json_text)
+        atomic_write_json(findings_json_path, sanitized_findings_records)
+        atomic_write_json(dir_report / "findings.json", sanitized_findings_records)
 
         # 6. Assessment JSON export - Privacy-Safe by default (Phase 4)
         assessment_json_path = out_dir / "assessment.json"
         sanitized_assessment_record = privacy_redactor.redact(assessment.model_dump())
-        assessment_json_text = json.dumps(sanitized_assessment_record, indent=2)
-        with open(assessment_json_path, "w", encoding="utf-8") as f:
-            f.write(assessment_json_text)
-        with open(dir_report / "assessment.json", "w", encoding="utf-8") as f:
-            f.write(assessment_json_text)
+        atomic_write_json(assessment_json_path, sanitized_assessment_record)
+        atomic_write_json(dir_report / "assessment.json", sanitized_assessment_record)
 
         # 7. IOCs JSON export - Privacy-Safe by default (Phase 4)
         iocs_json_path = out_dir / "iocs.json"
         sanitized_iocs = privacy_redactor.redact({"host_iocs": assessment.host_iocs, "network_iocs": assessment.network_iocs})
-        iocs_json_text = json.dumps(sanitized_iocs, indent=2)
-        with open(iocs_json_path, "w", encoding="utf-8") as f:
-            f.write(iocs_json_text)
-        with open(dir_report / "iocs.json", "w", encoding="utf-8") as f:
-            f.write(iocs_json_text)
+        atomic_write_json(iocs_json_path, sanitized_iocs)
+        atomic_write_json(dir_report / "iocs.json", sanitized_iocs)
 
         # 8. Coverage JSON export
         coverage_json_path = out_dir / "coverage.json"
         cov = getattr(assessment, "coverage", None)
         cov_dict = cov.model_dump() if hasattr(cov, "model_dump") else (cov if isinstance(cov, dict) else {})
-        cov_json_text = json.dumps(cov_dict, indent=2)
-        with open(coverage_json_path, "w", encoding="utf-8") as f:
-            f.write(cov_json_text)
-        with open(dir_report / "coverage.json", "w", encoding="utf-8") as f:
-            f.write(cov_json_text)
+        sanitized_cov = privacy_redactor.redact(cov_dict)
+        atomic_write_json(coverage_json_path, sanitized_cov)
+        atomic_write_json(dir_report / "coverage.json", sanitized_cov)
 
         # Opt-in Raw Evidence Export (Phase 4)
         raw_evidence_json_path = None
@@ -586,11 +596,15 @@ class AnalysisOrchestrator:
             raw_evidence_json_path = out_dir / "evidence.raw.json"
             evidence_store.export(raw_evidence_json_path)
             evidence_store.export(dir_evidence / "evidence.raw.json")
+            set_posix_permissions(raw_evidence_json_path, 0o600)
+            set_posix_permissions(dir_evidence / "evidence.raw.json", 0o600)
             manifest.record_output_artifact("evidence.raw.json", raw_evidence_json_path)
 
         # 9. Ensure artifacts and figures directories exist
         (out_dir / "artifacts").mkdir(parents=True, exist_ok=True)
+        set_posix_permissions(out_dir / "artifacts", 0o700)
         (out_dir / "figures").mkdir(parents=True, exist_ok=True)
+        set_posix_permissions(out_dir / "figures", 0o700)
 
         # -------------------------------------------------------------
         # 11. OUTPUT LINEAGE & MANIFEST INTEGRITY (No self-hashing)
@@ -612,7 +626,12 @@ class AnalysisOrchestrator:
 
         manifest.complete()
         companion_sha256_path = manifest.export_json(manifest_json_path)
-        manifest.export_json(dir_manifest / "analysis_manifest.json")
+        dir_manifest_sha = manifest.export_json(dir_manifest / "analysis_manifest.json")
+        set_posix_permissions(manifest_json_path, 0o600)
+        set_posix_permissions(companion_sha256_path, 0o600)
+        set_posix_permissions(dir_manifest / "analysis_manifest.json", 0o600)
+        set_posix_permissions(dir_manifest_sha, 0o600)
+
 
         notify("Triage pipeline complete!", 14)
 

@@ -24,8 +24,8 @@ def hash_file_streaming(file_path: Path, chunk_size: int = 65536) -> Dict[str, s
     if not p.exists() or not p.is_file():
         return {"md5": "N/A", "sha1": "N/A", "sha256": "N/A"}
 
-    h_md5 = hashlib.md5()
-    h_sha1 = hashlib.sha1()
+    h_md5 = hashlib.md5(usedforsecurity=False)
+    h_sha1 = hashlib.sha1(usedforsecurity=False)
     h_sha256 = hashlib.sha256()
 
     with open(p, "rb") as f:

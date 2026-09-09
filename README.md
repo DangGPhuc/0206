@@ -62,20 +62,21 @@ Every capability in 0206 is explicitly classified by its actual implementation s
 | **Evidence Store & Provenance** | `IMPLEMENTED` | Deterministic fingerprinting, atomic deduplication, lineage tracking |
 | **Correlation Engine** | `IMPLEMENTED` | Multi-evidence correlation rules for process injection, C2, and persistence |
 | **Deterministic Assessment** | `IMPLEMENTED` | Authoritative scoring, classification, and calibrated MITRE ATT&CK mapping |
-| **Privacy & Secret Redaction (DLP)** | `IMPLEMENTED` | Best-effort redaction of keys, tokens, paths, and usernames; strict DLP transmission gate |
+| **Privacy & Secret Redaction (DLP)** | `IMPLEMENTED` | Best-effort privacy redaction + fail-closed transmission gate for detected sensitive fields |
 | **Deterministic Offline AI** | `IMPLEMENTED` | Rule-based narrative synthesizer; zero network calls; zero API keys required |
-| **Canonical Two-Stage Reporting** | `IMPLEMENTED` | 23-section Markdown, DOCX, and Machine JSON reports with explicit `[NOT_ANALYZED]` tags |
+| **Canonical Two-Stage Reporting** | `IMPLEMENTED` | 25-section Markdown, DOCX, and Machine JSON reports with explicit `[NOT_ANALYZED]` tags |
 | **Output Artifact Lineage** | `IMPLEMENTED` | Detached `analysis_manifest.sha256` and cryptographic hash verification |
-| **Process Execution Safety** | `IMPLEMENTED` | Subprocess isolation, bounded file-backed I/O buffers (`MAX_STDOUT_BYTES`), and timeouts |
-| **Remote AI (OpenAI / Anthropic)** | `OPTIONAL` | Gated by pre-flight DLP audit; non-authoritative interpretation layer only |
-| **Local LLM (Ollama)** | `OPTIONAL` | HTTP API integration with local Ollama daemon |
+| **Bounded External Tool Execution** | `IMPLEMENTED` | Subprocess isolation (shell=False), argument arrays, process-tree timeout termination, and bounded temporary-file I/O |
+| **OS-level Static Tool Sandbox** | `NOT_IMPLEMENTED` | Static analyzers execute under host process boundaries without containerization or kernel sandboxing |
+| **Remote AI (OpenAI / Anthropic)** | `OPTIONAL` | Gated by pre-flight DLP audit; allowlist projected envelope; non-authoritative interpretation layer only |
+| **Local LLM (Ollama)** | `OPTIONAL` | Local service integration with Ollama daemon; isolated credentials |
 | **Template-Adapted DOCX** | `OPTIONAL` | Report adapter inspired by common industry malware-analysis report structures |
 | **YARA Scanner Adapter** | `PARTIAL` | Active only when yara engine is installed AND valid ruleset is provided; otherwise reported as `[NOT_ANALYZED]` |
 | **Ghidra Adapter** | `PARTIAL` | Capability detection and optional headless script invocation if installed |
 | **Capa / Radare2 / FLOSS** | `PARTIAL` | External tool wrapper invoking local CLI if detected in PATH |
 | **IDA Pro Adapter** | `STUB` | Normalization contract ready; requires user-provided IDA Pro license |
 | **x64dbg / WinDbg Adapters** | `STUB` | Normalization contract ready; requires Windows host environment |
-| **Live Hostile Detonation Sandbox** | `NOT_IMPLEMENTED` | Analyst safety: live hostile execution is not supported; ingests recorded traces only |
+| **Live Hostile Detonation Sandbox** | `NOT_IMPLEMENTED` | Analyst safety: live hostile detonation on workstation is not supported; lab layer orchestrates external VMs |
 
 ---
 

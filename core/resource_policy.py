@@ -16,6 +16,8 @@ from config import (
     MAX_STRINGS,
     MAX_STRING_LENGTH,
     MAX_LOG_ROWS,
+    MAX_REGSHOT_SIZE,
+    MAX_REGSHOT_LINES,
     MAX_REPORT_SIZE,
     ANALYSIS_TIMEOUT,
     ADAPTER_TIMEOUT,
@@ -35,6 +37,8 @@ class ResourcePolicy:
     max_strings: int = MAX_STRINGS
     max_string_length: int = MAX_STRING_LENGTH
     max_log_rows: int = MAX_LOG_ROWS
+    max_regshot_size: int = MAX_REGSHOT_SIZE
+    max_regshot_lines: int = MAX_REGSHOT_LINES
     max_report_size: int = MAX_REPORT_SIZE
     analysis_timeout: int = ANALYSIS_TIMEOUT
     adapter_timeout: int = ADAPTER_TIMEOUT
@@ -62,3 +66,6 @@ class ResourcePolicy:
     def check_procmon(self, file_path: Path) -> Tuple[bool, Optional[str]]:
         # Procmon CSV file size check (allow up to 200MB file, max_log_rows controls parsed rows)
         return self.check_file_size(file_path, 200 * 1024 * 1024, "Procmon CSV")
+
+    def check_regshot(self, file_path: Path) -> Tuple[bool, Optional[str]]:
+        return self.check_file_size(file_path, self.max_regshot_size, "Regshot diff log")

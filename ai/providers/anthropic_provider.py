@@ -1,8 +1,11 @@
 """
 0206 - Anthropic AI Provider
+Phase 17: Provider implementation for Anthropic Claude APIs.
+Enforces credential isolation: only inspects ANTHROPIC_API_KEY and ANTHROPIC_MODEL.
 """
 import os
 import json
+import urllib.request
 from typing import Dict, Any, List, Optional
 from core.evidence import EvidenceStore
 from core.findings import Finding
@@ -19,6 +22,7 @@ class AnthropicProvider(AIProvider):
         model: Optional[str] = None,
         privacy_mode: str = "strict"
     ):
+        # Strictly isolated: only Anthropic credentials/models
         self.api_key = api_key or os.getenv("ANTHROPIC_API_KEY", "")
         self.model = model or os.getenv("ANTHROPIC_MODEL", "claude-3-5-sonnet-20241022")
         self.redactor = PrivacyRedactor(mode=privacy_mode)
@@ -32,23 +36,27 @@ class AnthropicProvider(AIProvider):
 
     def synthesize(
         self,
-        evidence_store: EvidenceStore,
-        findings: List[Finding],
-        system_prompt: str,
-        user_prompt: str,
+        request: Optional[Any] = None,
+        evidence_store: Optional[EvidenceStore] = None,
+        findings: Optional[List[Finding]] = None,
+        system_prompt: Optional[str] = None,
+        user_prompt: Optional[str] = None,
+        **kwargs
     ) -> Dict[str, Any]:
-        # Anthropic API call with json parsing
-        import urllib.request
+        sys_prompt = getattr(request, "system_prompt", None) or system_prompt or ""
+        usr_prompt = getattr(request, "user_prompt", None) or user_prompt or ""
+        req_model = getattr(request, "model", None) or self.model
+
         headers = {
             "x-api-key": self.api_key,
             "anthropic-version": "2023-06-01",
             "content-type": "application/json"
         }
         body = {
-            "model": self.model,
+            "model": req_model,
             "max_tokens": 4096,
-            "system": system_prompt,
-            "messages": [{"role": "user", "content": user_prompt}]
+            "system": sys_prompt,
+            "messages": [{"role": "user", "content": usr_prompt}]
         }
         req = urllib.request.Request(
             "https://api.anthropic.com/v1/messages",

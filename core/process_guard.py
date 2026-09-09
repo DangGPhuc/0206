@@ -1,7 +1,7 @@
 """
 0206 - External Process Security Guard
 Enforces secure process execution:
-- Strict argument array passing (no shell=True)
+- Strict argument array passing (shell=False mandatory)
 - Timeout bounds (prevent runaway analysis processes)
 - Output size limits with temporary-file backing (prevent memory exhaustion)
 - Environment sanitization (prevents leakage of API keys or secrets to sub-processes)
@@ -15,7 +15,7 @@ import subprocess
 import tempfile
 from pathlib import Path
 from dataclasses import dataclass
-from typing import List, Optional, Dict
+from typing import List, Optional, Dict, Any
 
 from config import MAX_STDOUT_BYTES, MAX_STDERR_BYTES
 
@@ -74,6 +74,36 @@ def sanitize_environment(
     return clean_env
 
 
+import signal
+
+try:
+    import resource
+    HAS_RESOURCE_MODULE = True
+except ImportError:
+    HAS_RESOURCE_MODULE = False
+
+
+def _make_posix_preexec(timeout_sec: int, max_out_bytes: int):
+    """Configures safe POSIX resource limits on child process where supported."""
+    def _preexec():
+        if HAS_RESOURCE_MODULE:
+            try:
+                cpu_bound = max(1, int(timeout_sec)) + 5
+                resource.setrlimit(resource.RLIMIT_CPU, (cpu_bound, cpu_bound + 2))
+            except (ValueError, OSError, AttributeError):
+                pass
+            try:
+                fsize_bound = max(max_out_bytes * 2, 50 * 1024 * 1024)
+                resource.setrlimit(resource.RLIMIT_FSIZE, (fsize_bound, fsize_bound))
+            except (ValueError, OSError, AttributeError):
+                pass
+            try:
+                resource.setrlimit(resource.RLIMIT_NOFILE, (1024, 2048))
+            except (ValueError, OSError, AttributeError):
+                pass
+    return _preexec
+
+
 def safe_run_process(
     cmd_args: List[str],
     timeout: int = 60,
@@ -84,18 +114,33 @@ def safe_run_process(
     max_stderr_bytes: Optional[int] = None
 ) -> ProcessExecutionResult:
     """
-    Executes an external binary securely with timeout and bounded temporary-file I/O.
+    Executes an external binary securely with timeout, process-tree cleanup, and bounded I/O.
     Guarantees:
-    - Never uses shell=True.
+    - Never executes via shell interpreter.
+    - Validates timeout and output bounds (rejects negative/pathological values).
+    - Terminates entire process group on timeout (POSIX start_new_session=True).
+    - Enforces safe POSIX resource limits where supported.
     - Zero unbounded memory buffering: stdout/stderr spool directly to OS temporary files.
     - Caps output at max_stdout_bytes and max_stderr_bytes with truncation tracking.
     """
     if not cmd_args or not isinstance(cmd_args, (list, tuple)):
         raise ValueError("cmd_args must be a non-empty list of string arguments.")
 
+    # Validate timeout
+    if not isinstance(timeout, (int, float)) or timeout <= 0 or timeout > 86400:
+        raise ValueError(f"Invalid timeout: {timeout}. Must be a positive number up to 86400 seconds.")
+
+    # Validate limit parameters
+    if max_stdout_bytes is not None and max_stdout_bytes <= 0:
+        raise ValueError(f"Invalid max_stdout_bytes: {max_stdout_bytes}. Must be a positive integer.")
+    if max_stderr_bytes is not None and max_stderr_bytes <= 0:
+        raise ValueError(f"Invalid max_stderr_bytes: {max_stderr_bytes}. Must be a positive integer.")
+    if max_output_bytes is not None and max_output_bytes <= 0:
+        raise ValueError(f"Invalid max_output_bytes: {max_output_bytes}. Must be a positive integer.")
+
     # Resolve limits
-    limit_stdout = max_stdout_bytes or max_output_bytes or MAX_STDOUT_BYTES
-    limit_stderr = max_stderr_bytes or (max_output_bytes // 2 if max_output_bytes else MAX_STDERR_BYTES)
+    limit_stdout = max_stdout_bytes if max_stdout_bytes is not None else (max_output_bytes if max_output_bytes is not None else MAX_STDOUT_BYTES)
+    limit_stderr = max_stderr_bytes if max_stderr_bytes is not None else ((max_output_bytes // 2) if max_output_bytes is not None else MAX_STDERR_BYTES)
 
     # Convert all arguments to strings
     safe_args = [str(arg) for arg in cmd_args]
@@ -109,20 +154,36 @@ def safe_run_process(
     try:
         # Use OS file-backed temporary storage to avoid buffering huge output into RAM
         with tempfile.TemporaryFile(mode="w+b") as out_f, tempfile.TemporaryFile(mode="w+b") as err_f:
-            proc = subprocess.Popen(
-                safe_args,
-                cwd=str(work_dir) if work_dir else None,
-                env=clean_env,
-                stdout=out_f,
-                stderr=err_f,
-                shell=False  # MANDATORY SECURITY REQUIREMENT
-            )
+            popen_kwargs: Dict[str, Any] = {
+                "cwd": str(work_dir) if work_dir else None,
+                "env": clean_env,
+                "stdout": out_f,
+                "stderr": err_f,
+                "shell": False  # MANDATORY SECURITY REQUIREMENT
+            }
+
+            # POSIX process isolation and process-tree grouping
+            if os.name != "nt":
+                popen_kwargs["start_new_session"] = True
+                if HAS_RESOURCE_MODULE:
+                    popen_kwargs["preexec_fn"] = _make_posix_preexec(int(timeout), limit_stdout + limit_stderr)
+
+            proc = subprocess.Popen(safe_args, **popen_kwargs)
 
             try:
                 proc.wait(timeout=timeout)
             except subprocess.TimeoutExpired:
                 timed_out = True
-                proc.kill()
+                # Terminate entire process group to avoid leaving orphan descendants
+                if os.name != "nt" and hasattr(os, "killpg") and hasattr(proc, "pid"):
+                    try:
+                        os.killpg(proc.pid, signal.SIGKILL)
+                    except ProcessLookupError:
+                        pass
+                    except Exception:
+                        proc.kill()
+                else:
+                    proc.kill()
                 proc.wait()
 
             duration_ms = round((time.perf_counter() - start_time) * 1000.0, 2)
@@ -170,6 +231,7 @@ def safe_run_process(
             error_message=str(ex),
             truncated=False
         )
+
 
 
 class SafeProcessGuard:

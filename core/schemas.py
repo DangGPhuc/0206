@@ -48,6 +48,13 @@ class AnalysisDomain(str, Enum):
     CRYPTOGRAPHY = "CRYPTOGRAPHY"
 
 
+class TransmissionMode(str, Enum):
+    """Canonical transmission states for external/local AI and reputation services."""
+    OFFLINE = "local"
+    LOCAL_SERVICE = "local"
+    REMOTE_SERVICE = "remote"
+
+
 # =====================================================================
 # Phase 3: Evidence Model & States
 # =====================================================================
