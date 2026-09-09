@@ -56,10 +56,12 @@ class CorrelationEngine:
         if not inj_findings:
             return
 
-        # Check for dynamic evidence in evidence store
+        # Check for dynamic evidence in evidence store (remote thread, memory manipulation, process creation)
         dynamic_inj_evs = (
             self.evidence_store.find(field="memory_protection") +
             self.evidence_store.find(field="remote_thread") +
+            self.evidence_store.find(field="remote_write") +
+            self.evidence_store.find(field="remote_memory_allocation") +
             self.evidence_store.find(source_type="PROCMON_PROCESS")
         )
 
@@ -86,21 +88,34 @@ class CorrelationEngine:
 
     def _correlate_c2_channel(self, findings: List[Finding]):
         """
-        Correlates network periodic beaconing with DNS resolution and HTTP/TLS request flows.
+        Correlates network periodic beaconing with DNS resolution and HTTP/TLS request flows
+        using calibrated terminology (CONFIRMED_C2, LIKELY_C2_BEACON, SUSPECTED_BEACONING, OBSERVED_PERIODIC_TRAFFIC).
         """
         net_findings = [f for f in findings if f.domain in (AnalysisDomain.NETWORK, AnalysisDomain.C2)]
         dns_evs = self.evidence_store.find(source_type="PCAP_DNS")
         http_evs = self.evidence_store.find(source_type="PCAP_HTTP")
 
         for f in net_findings:
-            if "Confirmed C2" in f.title:
+            title_upper = f.title.upper()
+            if "CONFIRMED_C2" in title_upper or "CONFIRMED C2" in title_upper:
                 f.status = FindingStatus.CONFIRMED_BEHAVIOR
                 f.state = EvidenceState.OBSERVED
                 f.correlation_rule = "CORR-002: Multi-Factor Periodic Flow Corroborated with HTTP/DNS Traffic"
                 f.why_it_matters = "Periodic network beaconing was corroborated by application layer request patterns to the same endpoint."
-            elif "Beaconing" in f.title or "Periodic" in f.title:
+            elif "LIKELY_C2_BEACON" in title_upper or "LIKELY C2" in title_upper:
+                f.status = FindingStatus.INFERRED_BEHAVIOR
+                f.state = EvidenceState.INFERRED
+                f.correlation_rule = "CORR-003: High-Confidence Periodic Beacon Corroborated with Application Endpoint"
+                f.why_it_matters = "High statistical periodicity and destination consistency indicate likely C2 beaconing activity."
+            elif "SUSPECTED_BEACONING" in title_upper or "SUSPECTED" in title_upper:
                 f.status = FindingStatus.OBSERVED_BEHAVIOR
-                f.correlation_rule = "CORR-003: Statistical Periodic Traffic Observed without Application-Layer C2 Proof"
+                f.state = EvidenceState.INFERRED
+                f.correlation_rule = "CORR-004: Suspected Beaconing Observed with Stable Interval Timing"
+                f.why_it_matters = "Statistical interval stability observed; payload intent remains unconfirmed."
+            elif "OBSERVED_PERIODIC_TRAFFIC" in title_upper or "BEACONING" in title_upper or "PERIODIC" in title_upper:
+                f.status = FindingStatus.OBSERVED_BEHAVIOR
+                f.state = EvidenceState.HEURISTIC
+                f.correlation_rule = "CORR-005: Statistical Periodic Traffic Observed without Application-Layer C2 Proof"
                 f.why_it_matters = "Statistical periodicity was observed in network flows, but payload semantics are unconfirmed."
 
     def _correlate_persistence(self, findings: List[Finding]):

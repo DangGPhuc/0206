@@ -115,6 +115,10 @@ class PEStaticAnalyzer:
 
         # 1. Base Metadata
         self.evidence_store.create(
+            self.file_path.name, "FILE_METADATA", "filename", self.file_path.name, "PEStaticAnalyzer",
+            artifact_sha256=sha256, domain=AnalysisDomain.PE
+        )
+        self.evidence_store.create(
             self.file_path.name, "FILE_METADATA", "sha256", sha256, "PEStaticAnalyzer",
             artifact_sha256=sha256, domain=AnalysisDomain.PE,
             provenance={"file_size": file_size, "md5": self.hashes.get("md5"), "sha1": self.hashes.get("sha1")}

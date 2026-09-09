@@ -35,10 +35,11 @@ from core.profiles import ProfileName, get_profile
 from core.evidence import EvidenceStore
 from core.findings import FindingEngine, Finding, Assessment
 from core.manifest import AnalysisManifest
-from core.privacy import PrivacyMode, PrivacyRedactor, BLOCK_REMOTE_TRANSMISSION
+from core.privacy import PrivacyMode, PrivacyRedactor, BLOCK_REMOTE_TRANSMISSION, DLPStatus
 from core.validators import validate_finding_evidence_grounding
 from integrations.registry import CapabilityRegistry
 
+from analyzers.reputation.stage import ReputationStage
 from analyzer.static import PEStaticAnalyzer
 from analyzer.behavioral import BehavioralAnalyzer
 from analyzer.code import CodeAnalyzer
@@ -71,6 +72,7 @@ class OrchestrationResult:
     assessment_json: Optional[Path] = None
     iocs_json: Optional[Path] = None
     coverage_json: Optional[Path] = None
+    evidence_raw_json: Optional[Path] = None
     warnings: List[str] = field(default_factory=list)
 
 
@@ -103,6 +105,7 @@ class AnalysisOrchestrator:
         backend: str = "memory",
         adaptive: bool = False,
         portable: bool = False,
+        export_raw_evidence: bool = False,
         step_callback: Optional[Callable[[str, int], None]] = None
     ) -> OrchestrationResult:
         """
@@ -145,21 +148,19 @@ class AnalysisOrchestrator:
             if not ok:
                 warnings.append(err or "Procmon resource limit exceeded")
 
-        # Destination Directory
-        out_dir = Path(output_dir) if output_dir else get_output_dir()
-        out_dir.mkdir(parents=True, exist_ok=True)
-
         # -------------------------------------------------------------
-        # 2. MANIFEST INITIALIZATION
+        # 2. MANIFEST & OUTPUT DIRECTORY INITIALIZATION
         # -------------------------------------------------------------
         notify("Initializing Evidence Store and Analysis Manifest...", 2)
         prof_cfg = get_profile(profile)
         
-        # In portable mode, sanitize host paths recorded in CLI arguments
+        # In strict/standard privacy or portable mode, sanitize host paths recorded in CLI arguments
         def sanitize_path(p: Optional[Path]) -> Optional[str]:
             if not p:
                 return None
-            return p.name if portable else str(p)
+            if privacy_mode in ("strict", "standard") or portable:
+                return p.name
+            return str(p)
 
         manifest = AnalysisManifest(
             privacy_mode=privacy_mode,
@@ -175,10 +176,28 @@ class AnalysisOrchestrator:
                 "adaptive": adaptive,
                 "portable": portable,
                 "backend": backend,
-                "yara_rules": sanitize_path(p_yara_rules)
+                "yara_rules": sanitize_path(p_yara_rules),
+                "export_raw_evidence": export_raw_evidence
             }
         )
         manifest.warnings.extend(warnings)
+
+        # Destination Directory (Case-scoped if using default output directory - Phase 14)
+        if output_dir:
+            out_dir = Path(output_dir)
+        else:
+            base_out = get_output_dir()
+            out_dir = base_out / manifest.case_id
+        out_dir.mkdir(parents=True, exist_ok=True)
+        manifest.resource_limits = {
+            "max_sample_size": self.resource_policy.max_sample_size,
+            "max_pcap_size": self.resource_policy.max_pcap_size,
+            "max_packets": self.resource_policy.max_packets,
+            "max_log_rows": self.resource_policy.max_log_rows,
+            "max_stdout_bytes": getattr(self.resource_policy, "max_stdout_bytes", 5 * 1024 * 1024),
+            "max_stderr_bytes": getattr(self.resource_policy, "max_stderr_bytes", 2 * 1024 * 1024),
+            "analysis_timeout": self.resource_policy.analysis_timeout
+        }
 
         # Record input artifact streaming hashes into manifest
         if p_sample and p_sample.exists():
@@ -201,15 +220,29 @@ class AnalysisOrchestrator:
         privacy_redactor = PrivacyRedactor(mode=privacy_mode)
 
         # -------------------------------------------------------------
-        # 4. ANALYZERS EXECUTION (Static, Code, Behavioral, Adapters)
+        # 4. REPUTATION ANALYSIS STAGE (Between HASH and STATIC - Phase 2)
+        # -------------------------------------------------------------
+        sample_sha256 = manifest.sample_hashes.get("sha256", "")
+        if p_sample and sample_sha256:
+            notify("Checking hash reputation (VirusTotal hash lookup only)...", 3)
+            t0 = time.perf_counter()
+            rep_stage = ReputationStage(offline=offline or portable)
+            rep_stage.analyze(sample_sha256, evidence_store=evidence_store, artifact_name=p_sample.name)
+            manifest.record_timing("ReputationStage", (time.perf_counter() - t0) * 1000.0)
+            manifest.analyzers_enabled.append("ReputationStage")
+        else:
+            manifest.analyzers_skipped.append("ReputationStage")
+
+        # -------------------------------------------------------------
+        # 5. ANALYZERS EXECUTION (Static, Code, Behavioral, Adapters)
         # -------------------------------------------------------------
         static_data: Dict[str, Any] = {}
         code_data: Dict[str, Any] = {}
         behavioral_data: Dict[str, Any] = {}
 
-        # 4a. Static PE Analyzer
+        # 5a. Static PE Analyzer
         if p_sample and prof_cfg.enable_static:
-            notify("Executing static PE analysis and section entropy triage...", 3)
+            notify("Executing static PE analysis and section entropy triage...", 4)
             t0 = time.perf_counter()
             static_analyzer = PEStaticAnalyzer(p_sample, evidence_store=evidence_store)
             static_data = static_analyzer.analyze()
@@ -304,30 +337,52 @@ class AnalysisOrchestrator:
         assessment = finding_engine.assess(validated_findings)
 
         # -------------------------------------------------------------
-        # 8. PRIVACY REDACTION & DLP BOUNDARY
+        # 8. PRIVACY REDACTION & DLP BOUNDARY (Phase 3)
         # -------------------------------------------------------------
-        notify("Enforcing privacy/DLP security boundary...", 9)
-        llm_provider = "offline" if (offline or prof_cfg.force_offline_ai) else "auto"
-        
-        # If remote AI is requested, perform DLP audit first
-        if llm_provider != "offline" and api_key:
+        notify("Enforcing privacy/DLP security boundary...", 10)
+
+        # Resolve provider and API key from argument or environment variables
+        effective_key = api_key or os.getenv("OPENAI_API_KEY") or os.getenv("ANTHROPIC_API_KEY")
+        is_remote = False
+        llm_provider = "offline"
+
+        if not (offline or prof_cfg.force_offline_ai):
+            if effective_key:
+                llm_provider = "openai" if (api_key or os.getenv("OPENAI_API_KEY")) else "anthropic"
+                is_remote = True
+            elif os.getenv("OLLAMA_HOST") or os.getenv("OPENAI_API_BASE"):
+                llm_provider = "ollama"
+                is_remote = True
+
+        if is_remote:
             evidence_summary = evidence_store.to_dict()
             sanitized_evidence = privacy_redactor.redact(evidence_summary)
-            is_safe, reasons = privacy_redactor.audit_for_transmission(sanitized_evidence)
-            if not is_safe:
-                # MANDATORY SECURITY BOUNDARY: Block remote transmission
-                manifest.warnings.append(f"{BLOCK_REMOTE_TRANSMISSION}: Sensitive telemetry detected. Fallback to offline AI.")
+            sanitized_findings = privacy_redactor.redact([f.model_dump() for f in validated_findings])
+            transmission_payload = {
+                "provider": llm_provider,
+                "model": model,
+                "evidence": sanitized_evidence,
+                "findings": sanitized_findings
+            }
+
+            audit_res = privacy_redactor.audit_for_transmission(transmission_payload)
+            if not audit_res.is_safe or audit_res.status == DLPStatus.BLOCKED:
+                manifest.warnings.append(
+                    f"{BLOCK_REMOTE_TRANSMISSION}: Sensitive telemetry detected ({'; '.join(audit_res.violations)}). "
+                    f"Blocked remote transmission; fallback to offline AI."
+                )
                 llm_provider = "offline"
+                effective_key = None
 
         manifest.ai_mode = llm_provider
 
         # -------------------------------------------------------------
         # 9. OPTIONAL AI ENRICHMENT & AI VALIDATION
         # -------------------------------------------------------------
-        notify("Synthesizing threat assessment (AI / Heuristic)...", 10)
+        notify("Synthesizing threat assessment (AI / Heuristic)...", 11)
         synthesizer = LLMThreatSynthesizer(
             provider=llm_provider,
-            api_key=api_key,
+            api_key=effective_key,
             model=model,
             privacy_mode=privacy_mode
         )
@@ -336,7 +391,7 @@ class AnalysisOrchestrator:
         # -------------------------------------------------------------
         # 10. MULTI-FORMAT DELIVERABLE GENERATION
         # -------------------------------------------------------------
-        notify("Compiling deliverables (JSON, Markdown, DOCX, Evidence, Findings)...", 11)
+        notify("Compiling deliverables (JSON, Markdown, DOCX, Evidence, Findings)...", 12)
 
         # Build structured Evidence Appendix for auditable reporting (Phase 20)
         ev_map = {e.evidence_id: e for e in evidence_store.all()}
@@ -385,6 +440,7 @@ class AnalysisOrchestrator:
             "findings": [f.model_dump() for f in validated_findings],
             "evidence_records": evidence_store.to_dict(),
             "evidence_appendix": evidence_appendix,
+            "coverage": assessment.coverage,
             "raw_telemetry": {
                 "static": static_data,
                 "code_analysis": code_data,
@@ -419,23 +475,29 @@ class AnalysisOrchestrator:
 
         docx_adapter.render(sanitized_payload, report_docx_path)
 
-        # 4. Evidence Store JSON export
+        # 4. Evidence Store JSON export - Privacy-Safe by default (Phase 4)
         evidence_json_path = out_dir / "evidence.json"
-        evidence_store.export(evidence_json_path)
+        sanitized_evidence_records = privacy_redactor.redact(evidence_store.to_dict())
+        with open(evidence_json_path, "w", encoding="utf-8") as f:
+            f.write(json.dumps(sanitized_evidence_records, indent=2))
 
-        # 5. Findings JSON export
+        # 5. Findings JSON export - Privacy-Safe by default (Phase 4)
         findings_json_path = out_dir / "findings.json"
-        finding_engine.export(findings_json_path)
+        sanitized_findings_records = privacy_redactor.redact([f.model_dump() for f in validated_findings])
+        with open(findings_json_path, "w", encoding="utf-8") as f:
+            f.write(json.dumps(sanitized_findings_records, indent=2))
 
-        # 6. Assessment JSON export
+        # 6. Assessment JSON export - Privacy-Safe by default (Phase 4)
         assessment_json_path = out_dir / "assessment.json"
+        sanitized_assessment_record = privacy_redactor.redact(assessment.model_dump())
         with open(assessment_json_path, "w", encoding="utf-8") as f:
-            f.write(json.dumps(assessment.model_dump(), indent=2))
+            f.write(json.dumps(sanitized_assessment_record, indent=2))
 
-        # 7. IOCs JSON export
+        # 7. IOCs JSON export - Privacy-Safe by default (Phase 4)
         iocs_json_path = out_dir / "iocs.json"
+        sanitized_iocs = privacy_redactor.redact({"host_iocs": assessment.host_iocs, "network_iocs": assessment.network_iocs})
         with open(iocs_json_path, "w", encoding="utf-8") as f:
-            f.write(json.dumps({"host_iocs": assessment.host_iocs, "network_iocs": assessment.network_iocs}, indent=2))
+            f.write(json.dumps(sanitized_iocs, indent=2))
 
         # 8. Coverage JSON export
         coverage_json_path = out_dir / "coverage.json"
@@ -444,6 +506,13 @@ class AnalysisOrchestrator:
             cov_dict = cov.model_dump() if hasattr(cov, "model_dump") else (cov if isinstance(cov, dict) else {})
             f.write(json.dumps(cov_dict, indent=2))
 
+        # Opt-in Raw Evidence Export (Phase 4)
+        raw_evidence_json_path = None
+        if export_raw_evidence:
+            raw_evidence_json_path = out_dir / "evidence.raw.json"
+            evidence_store.export(raw_evidence_json_path)
+            manifest.record_output_artifact("evidence.raw.json", raw_evidence_json_path)
+
         # 9. Ensure artifacts and figures directories exist
         (out_dir / "artifacts").mkdir(parents=True, exist_ok=True)
         (out_dir / "figures").mkdir(parents=True, exist_ok=True)
@@ -451,7 +520,7 @@ class AnalysisOrchestrator:
         # -------------------------------------------------------------
         # 11. OUTPUT LINEAGE & MANIFEST INTEGRITY (No self-hashing)
         # -------------------------------------------------------------
-        notify("Finalizing audit manifest and output lineage hashes...", 12)
+        notify("Finalizing audit manifest and output lineage hashes...", 13)
         manifest_json_path = out_dir / "analysis_manifest.json"
         
         # Record output artifact lineage strictly excluding self-referential manifest files
@@ -463,11 +532,13 @@ class AnalysisOrchestrator:
         manifest.record_output_artifact("assessment.json", assessment_json_path)
         manifest.record_output_artifact("iocs.json", iocs_json_path)
         manifest.record_output_artifact("coverage.json", coverage_json_path)
+        if raw_evidence_json_path and raw_evidence_json_path.exists():
+            manifest.record_output_artifact("evidence.raw.json", raw_evidence_json_path)
 
         manifest.complete()
         companion_sha256_path = manifest.export_json(manifest_json_path)
 
-        notify("Triage pipeline complete!", 13)
+        notify("Triage pipeline complete!", 14)
 
         return OrchestrationResult(
             case_id=manifest.case_id,
@@ -486,6 +557,7 @@ class AnalysisOrchestrator:
             assessment_json=assessment_json_path,
             iocs_json=iocs_json_path,
             coverage_json=coverage_json_path,
+            evidence_raw_json=raw_evidence_json_path,
             warnings=manifest.warnings
         )
 

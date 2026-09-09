@@ -23,7 +23,9 @@ class AdvancedReportBuilder:
             "advanced_static": {},
             "assembly_code": {},
             "api_control_flow": {},
-            "advanced_dynamic_process": {},
+            "advanced_dynamic": {},
+            "process_thread": {},
+            "advanced_dynamic_process": {},  # backwards compatibility alias
             "memory_analysis": {},
             "network_c2": {},
             "persistence": {},
@@ -71,20 +73,37 @@ class AdvancedReportBuilder:
                 "details": "[NOT_ANALYZED] No dynamic API resolution or control flow cross-references detected."
             }
 
-        # 10. Advanced Dynamic / Process / Thread Analysis
+        # 10. Advanced Dynamic Analysis
+        dyn_events = evidence_store.find(domain="DYNAMIC") + [r for r in evidence_store.all() if r.source_type in ("SANDBOX", "DYNAMIC_TRACE")]
+        if dyn_events:
+            data["advanced_dynamic"] = {
+                "status": "COMPLETED",
+                "event_count": len(dyn_events),
+                "details": f"Captured {len(dyn_events)} dynamic execution traces."
+            }
+        else:
+            data["advanced_dynamic"] = {
+                "status": "NOT_ANALYZED",
+                "details": "[NOT_ANALYZED] Dynamic execution trace or sandbox telemetry not provided."
+            }
+
+        # 11. Process / Thread Analysis
         proc_events = evidence_store.find(domain="PROCESS")
         thread_events = evidence_store.find(domain="THREAD")
         if proc_events or thread_events:
-            data["advanced_dynamic_process"] = {
+            data["process_thread"] = {
                 "status": "COMPLETED",
                 "process_count": len(proc_events),
                 "thread_count": len(thread_events),
+                "details": f"Observed {len(proc_events)} process events and {len(thread_events)} thread events."
             }
         else:
-            data["advanced_dynamic_process"] = {
+            data["process_thread"] = {
                 "status": "NOT_ANALYZED",
-                "details": "[NOT_ANALYZED] Dynamic execution trace not provided."
+                "details": "[NOT_ANALYZED] No process tree or thread injection events recorded."
             }
+        # Backwards compatibility alias
+        data["advanced_dynamic_process"] = data["process_thread"]
 
         # 11. Memory Analysis
         mem_events = evidence_store.find(domain="MEMORY")
@@ -129,7 +148,7 @@ class AdvancedReportBuilder:
         else:
             data["persistence"] = {
                 "status": "NOT_ANALYZED",
-                "details": "[NOT_ANALYZED] No persistence indicators observed in triage data."
+                "details": "[NOT_ANALYZED] Dedicated host persistence artifact inspection not engaged in profile."
             }
 
         # 14. Anti-Analysis
@@ -142,7 +161,7 @@ class AdvancedReportBuilder:
         else:
             data["anti_analysis"] = {
                 "status": "NOT_ANALYZED",
-                "details": "[NOT_ANALYZED] No anti-debugging or evasion checks identified."
+                "details": "[NOT_ANALYZED] Dedicated anti-analysis and evasion detection not engaged in profile."
             }
 
         # 15. Unpacking
@@ -155,7 +174,7 @@ class AdvancedReportBuilder:
         else:
             data["unpacking"] = {
                 "status": "NOT_ANALYZED",
-                "details": "[NOT_ANALYZED] No automated unpacking or entropy shifts recorded."
+                "details": "[NOT_ANALYZED] Dynamic unpacking and payload extraction not engaged in profile."
             }
 
         # 16. Cross-Stage Correlation & Final Synthesis

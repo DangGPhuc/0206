@@ -23,7 +23,8 @@ class BasicReportBuilder:
             "reputation": {},
             "basic_static": {},
             "basic_behavioral": {},
-            "preliminary_findings": [],
+            "initial_findings": findings,
+            "preliminary_findings": findings,
             "initial_assessment": assessment,
         }
 
@@ -45,17 +46,40 @@ class BasicReportBuilder:
 
         # 2. Reputation
         rep_records = evidence_store.find(source_type="REPUTATION")
-        if rep_records:
-            r = rep_records[0]
+        ratio_rec = next((r for r in rep_records if r.field == "detection_ratio"), None)
+        status_rec = next((r for r in rep_records if r.field == "lookup_status"), None)
+
+        if ratio_rec or status_rec:
+            r = ratio_rec or status_rec
             prov = r.provenance or {}
-            data["reputation"] = {
-                "status": "COMPLETED",
-                "provider": r.extractor,
-                "detection_ratio": f"{prov.get('positives', 0)}/{prov.get('total', 0)}",
-                "first_seen": prov.get("first_seen", "N/A"),
-                "last_seen": prov.get("last_seen", "N/A"),
-                "privacy_mode": manifest.get("privacy_mode", "strict (hash lookup only)"),
-            }
+            lookup_status = prov.get("lookup_status") or (str(status_rec.value) if status_rec else "NOT_CHECKED")
+            ratio_val = str(ratio_rec.value) if ratio_rec else "N/A"
+
+            if lookup_status in ("NOT_CHECKED", "SKIPPED_OFFLINE", "LOOKUP_FAILED"):
+                data["reputation"] = {
+                    "status": lookup_status,
+                    "provider": r.extractor or "VirusTotal",
+                    "detection_ratio": "N/A",
+                    "details": prov.get("details") or "External hash reputation lookup skipped in offline mode / no API key.",
+                    "privacy_mode": manifest.get("privacy_mode", "strict (hash lookup only)"),
+                }
+            elif lookup_status == "NOT_FOUND":
+                data["reputation"] = {
+                    "status": "NOT_FOUND",
+                    "provider": r.extractor or "VirusTotal",
+                    "detection_ratio": "NOT_FOUND",
+                    "details": "Hash not found in intelligence database (absence of intel != clean).",
+                    "privacy_mode": manifest.get("privacy_mode", "strict (hash lookup only)"),
+                }
+            else:
+                data["reputation"] = {
+                    "status": "COMPLETED",
+                    "provider": r.extractor or "VirusTotal",
+                    "detection_ratio": ratio_val if ratio_val != "N/A" else f"{prov.get('positives', 0)}/{prov.get('total', 0)}",
+                    "first_seen": prov.get("first_seen", "N/A"),
+                    "last_seen": prov.get("last_analysis") or prov.get("last_seen", "N/A"),
+                    "privacy_mode": manifest.get("privacy_mode", "strict (hash lookup only)"),
+                }
         else:
             data["reputation"] = {
                 "status": "NOT_ANALYZED",
@@ -82,7 +106,7 @@ class BasicReportBuilder:
             "ips": ips[:20],
         }
 
-        # 4. Basic Behavioral Analysis
+        # 4. Basic Behavioral Analysis (Artifact Ingestion Only)
         behav_proc = [r for r in evidence_store.find(source_type="PROCMON") if r.field == "process_create"]
         behav_file = [r for r in evidence_store.find(source_type="PROCMON") if "file" in r.field]
         behav_reg = [r for r in evidence_store.find(source_type="PROCMON") if "reg" in r.field]
@@ -90,13 +114,16 @@ class BasicReportBuilder:
         if behav_proc or behav_file or behav_reg or regshot:
             data["basic_behavioral"] = {
                 "status": "COMPLETED",
+                "mode": "ARTIFACT_INGESTION",
                 "processes_spawned": len(behav_proc),
                 "file_events": len(behav_file),
                 "registry_events": len(behav_reg) + len(regshot),
+                "details": "Telemetry ingested from recorded capture artifacts (Procmon/Regshot). (Host safe: no live execution performed)."
             }
         else:
             data["basic_behavioral"] = {
                 "status": "NOT_ANALYZED",
+                "mode": "NONE",
                 "details": "No behavioral artifacts (Procmon CSV / Regshot) provided."
             }
 

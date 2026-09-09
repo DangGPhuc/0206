@@ -5,23 +5,23 @@
 [![MITRE ATT&CK](https://img.shields.io/badge/MITRE-ATT%26CK%20v14-orange.svg)](https://attack.mitre.org/)
 [![Status: Operational](https://img.shields.io/badge/Status-Local--First%20Triage-brightgreen.svg)]()
 
-> **"0206 is a local-first malware analysis and reporting platform that moves from basic triage to advanced analysis while keeping evidence, provenance, and reporting in one workflow."**
+> **"0206 is an independent, local-first, evidence-driven malware analysis and reporting platform that progresses from basic static/behavioral analysis to advanced static/dynamic analysis and produces a structured, evidence-grounded malware-analysis report."**
 
 ---
 
 ### In 30 Seconds: What You Need to Know
 
-- **WHAT IS 0206?** An evidence-driven platform that triages suspicious PE binaries and behavioral telemetry, correlates static and dynamic indicators, preserves uncertainty, and compiles comprehensive reports.
+- **WHAT IS 0206?** An evidence-driven platform that triages suspicious PE binaries and behavioral telemetry, correlates static and dynamic indicators, preserves analytical uncertainty, and compiles comprehensive reports.
 - **WHY DOES IT EXIST?** Malware analysis workflows often suffer from disconnected tools, hallucinated AI summaries, ungrounded heuristics, and messy reporting. 0206 provides a rigorous pipeline connecting raw observations to verified findings.
 - **WHAT DOES IT PRODUCE?** Standalone forensic case bundles containing **Machine JSON**, **Executive Markdown**, professional **DOCX reports** (generic or template-adapted), structured **Evidence Stores**, **Finding Catalogs**, **IOCs**, **Coverage Matrices**, and **Cryptographic Audit Manifests**.
 - **WHAT DO I NEED TO RUN IT?** A clean machine with Python 3.10+ and standard open-source packages (`pefile`, `capstone`, `scapy`, `python-docx`, `pydantic`, `rich`). **No IDA Pro, Ghidra, x64dbg, WinDbg, PEView, cloud APIs, MCP servers, or proprietary course materials required.**
 
 > [!IMPORTANT]
 > **What 0206 IS NOT:**
-> - **NOT an IDA Pro or Ghidra replacement:** 0206 performs static code triage and normalizes external disassembly/decompilation evidence.
+> - **NOT an IDA Pro or Ghidra replacement:** 0206 performs static code triage and normalizes external disassembly/decompilation evidence into domain-based records.
 > - **NOT a universal automated sandbox:** 0206 safely ingests recorded execution traces (PCAP, Procmon CSV, Regshot); it will **NEVER** execute live hostile malware directly on your analyst workstation.
 > - **NOT an automated malware oracle:** It distinguishes potential capability from confirmed runtime behavior.
-> - **NOT an official SANS institute product:** It provides independent forensic schemas compatible with industry-standard analysis workflows without distributing copyrighted courseware.
+> - **NOT an official SANS Institute product:** It provides independent forensic schemas inspired by common industry malware-analysis report structures without distributing copyrighted courseware.
 
 ---
 
@@ -43,9 +43,39 @@ pip install -e .
 # 4. Run automated offline self-test
 0206 selftest
 
-# 5. Analyze sample in 100% offline mode
+# 5. Analyze sample in offline mode
 0206 analyze sample.exe --offline
 ```
+
+---
+
+## 📊 Capability & Implementation Status Matrix
+
+Every capability in 0206 is explicitly classified by its actual implementation status:
+
+| Capability / Module | Status | Technical Description |
+| :--- | :---: | :--- |
+| **PE Static Triage** | `IMPLEMENTED` | Headers, section entropy, imports, exports, API hashing constants (djb2, ror13, crc32, fnv1a) |
+| **Static Code Triage (Capstone)** | `IMPLEMENTED` | Entry point disassembly and instruction decoding |
+| **Reputation Stage (VirusTotal)** | `IMPLEMENTED` | Pluggable hash-only lookup; never uploads samples; offline-safe fallback |
+| **Behavioral Telemetry Ingestion** | `IMPLEMENTED` | Normalizes Procmon CSV, Regshot diffs, and streaming PCAP traces |
+| **Evidence Store & Provenance** | `IMPLEMENTED` | Deterministic fingerprinting, atomic deduplication, lineage tracking |
+| **Correlation Engine** | `IMPLEMENTED` | Multi-evidence correlation rules for process injection, C2, and persistence |
+| **Deterministic Assessment** | `IMPLEMENTED` | Authoritative scoring, classification, and calibrated MITRE ATT&CK mapping |
+| **Privacy & Secret Redaction (DLP)** | `IMPLEMENTED` | Best-effort redaction of keys, tokens, paths, and usernames; strict DLP transmission gate |
+| **Deterministic Offline AI** | `IMPLEMENTED` | Rule-based narrative synthesizer; zero network calls; zero API keys required |
+| **Canonical Two-Stage Reporting** | `IMPLEMENTED` | 23-section Markdown, DOCX, and Machine JSON reports with explicit `[NOT_ANALYZED]` tags |
+| **Output Artifact Lineage** | `IMPLEMENTED` | Detached `analysis_manifest.sha256` and cryptographic hash verification |
+| **Process Execution Safety** | `IMPLEMENTED` | Subprocess isolation, bounded file-backed I/O buffers (`MAX_STDOUT_BYTES`), and timeouts |
+| **Remote AI (OpenAI / Anthropic)** | `OPTIONAL` | Gated by pre-flight DLP audit; non-authoritative interpretation layer only |
+| **Local LLM (Ollama)** | `OPTIONAL` | HTTP API integration with local Ollama daemon |
+| **Template-Adapted DOCX** | `OPTIONAL` | Report adapter inspired by common industry malware-analysis report structures |
+| **YARA Scanner Adapter** | `PARTIAL` | Active only when yara engine is installed AND valid ruleset is provided; otherwise reported as `[NOT_ANALYZED]` |
+| **Ghidra Adapter** | `PARTIAL` | Capability detection and optional headless script invocation if installed |
+| **Capa / Radare2 / FLOSS** | `PARTIAL` | External tool wrapper invoking local CLI if detected in PATH |
+| **IDA Pro Adapter** | `STUB` | Normalization contract ready; requires user-provided IDA Pro license |
+| **x64dbg / WinDbg Adapters** | `STUB` | Normalization contract ready; requires Windows host environment |
+| **Live Hostile Detonation Sandbox** | `NOT_IMPLEMENTED` | Analyst safety: live hostile execution is not supported; ingests recorded traces only |
 
 ---
 
@@ -59,12 +89,12 @@ $$\text{OBSERVATION} \longrightarrow \text{EVIDENCE} \longrightarrow \text{FINDI
 | :--- | :--- | :--- |
 | **Observation** | `VirtualAllocEx` imported in Import Table | Raw fact extracted from binary headers |
 | **Evidence** | `E-0012` (`state=OBSERVED`, `confidence=1.0`) | Canonical, fingerprinted forensic evidence record |
-| **Finding** | `F-0004` ("Possible Process Injection Capability") | Inferred capability based on static indicators |
+| **Finding** | `F-0004` ("Suspicious Memory Allocation Capability") | Inferred capability based on static indicators |
 | **Correlation** | `VirtualAllocEx` + `WriteProcessMemory` + Procmon remote thread creation | Correlating static capability with observed behavioral telemetry |
 | **Assessment** | "Remote Process Injection Confirmed" (`Score: 78/100`) | Multi-domain risk evaluation and threat rating |
 | **Report** | Two-stage technical report with full provenance citations | Human-readable explanation grounded in verifiable evidence IDs |
 
-*Rule: Never treat a single weak heuristic as confirmed hostile behavior.*
+*Rule: Never treat a single capability heuristic as confirmed hostile behavior.*
 
 ---
 
@@ -125,29 +155,38 @@ flowchart TD
 
 ---
 
-## 🔬 Two-Stage Analysis Structure
+## 🔬 Canonical 23-Section Report Structure
 
-Every analysis report generated by 0206 follows a comprehensive two-stage structure:
+Every report generated by 0206 adheres to the canonical 23-section structure:
 
 ### PART I — BASIC ANALYSIS
 1. **Sample Identification:** File metadata, SHA256/SHA1/MD5, file size, PE architecture, subsystem, entry point RVA, image base.
-2. **Reputation Assessment:** Hash reputation lookup (VirusTotal / providers). Defaults to hash lookup only; **never uploads binaries**.
-3. **Basic Static Analysis:** PE sections, Shannon entropy, imports, exports, suspicious strings, URLs, IPs, API hashing constants (djb2, ror13, crc32, fnv1a).
+2. **Reputation:** Hash reputation lookup (VirusTotal / providers). Defaults to hash lookup only; **never uploads binaries**.
+3. **Basic Static Analysis:** PE sections, Shannon entropy, imports, exports, suspicious strings, URLs, IPs, API hashing constants.
 4. **Basic Behavioral Analysis:** Ingestion and normalization of Procmon, Regshot, and telemetry logs into unified event primitives (`PROCESS_CREATE`, `FILE_WRITE`, `REGISTRY_WRITE`).
-5. **Preliminary Findings:** Grounded inferences categorized by domain and confidence.
-6. **Initial Triage Assessment:** Deterministic risk score and initial threat classification.
+5. **Initial Findings:** Grounded inferences categorized by domain and confidence.
+6. **Initial Assessment:** Deterministic risk score and initial threat classification.
 
 ### PART II — ADVANCED ANALYSIS
 7. **Advanced Static Analysis:** Loader validation, section anomalies, embedded payloads.
-8. **Assembly & Code Analysis:** Entry-point disassembly via Capstone, instruction decoding, suspicious patterns.
-9. **API & Control Flow Analysis:** Dynamic resolution tracking, API hashing constants, xrefs.
-10. **Advanced Dynamic & Process Analysis:** Process tree hierarchies, remote thread creation, injection tracing.
-11. **Memory Analysis:** RWX section identification, shellcode buffers, in-memory patch detection.
-12. **Network & C2 Analysis:** Streaming PCAP processing, DNS query extraction, HTTP requests, beaconing periodicity, and jitter metrics.
-13. **Persistence Analysis:** Autostart registry keys, scheduled tasks, service registrations.
-14. **Anti-Analysis & Defense Evasion:** Anti-debugging, timing anomalies, virtualization checks.
-15. **Unpacking & Obfuscation:** Section entropy deltas, packed headers.
-16. **Cross-Stage Correlation & Final Synthesis:** Correlating static capabilities with dynamic execution traces to promote capabilities to `CONFIRMED_BEHAVIOR`.
+8. **Assembly / Code Analysis:** Entry-point disassembly via Capstone, instruction decoding, suspicious patterns.
+9. **API / Control Flow Analysis:** Dynamic resolution tracking, API hashing constants, xrefs.
+10. **Advanced Dynamic Analysis:** Process tree hierarchies, execution traces, sandbox telemetry.
+11. **Process / Thread Analysis:** Process relationships, thread injection tracing.
+12. **Memory Analysis:** RWX section identification, shellcode buffers, in-memory patch detection.
+13. **Network / C2 Analysis:** Streaming PCAP processing, DNS query extraction, HTTP requests, beaconing periodicity, and jitter metrics.
+14. **Persistence:** Autostart registry keys, scheduled tasks, service registrations.
+15. **Anti-Analysis:** Anti-debugging, timing anomalies, virtualization checks.
+16. **Unpacking:** Section entropy deltas, packed headers.
+17. **Cross-Stage Correlation:** Correlating static capabilities with dynamic execution traces to promote capabilities to `CONFIRMED_BEHAVIOR`.
+18. **Final Assessment:** Authoritative threat score, threat level, classification, and executive synthesis.
+
+### APPENDICES & AUDIT
+19. **Indicators of Compromise (IOC):** Host and network IOCs.
+20. **MITRE ATT&CK:** Calibrated technique mapping with confidence, basis, and citing evidence IDs.
+21. **Limitations:** Analysis boundaries, non-destructive static rules, offline parameters.
+22. **Evidence Appendix:** Complete catalog of all verified EvidenceRecords and parent lineage.
+23. **Analysis Manifest:** Execution environment, Python version, host platform, tool versions, resource limits, and Analysis Coverage Matrix.
 
 *Note: Any domain for which evidence was not provided explicitly outputs `[NOT_ANALYZED]`. 0206 never fabricates data for missing sections.*
 
@@ -155,23 +194,24 @@ Every analysis report generated by 0206 follows a comprehensive two-stage struct
 
 ## 🔒 Privacy & DLP Security Guard
 
-0206 incorporates a strict **Data Loss Prevention (DLP)** boundary:
+0206 incorporates a strict best-effort **Data Loss Prevention (DLP)** boundary:
 
 $$\text{RAW DATA} \longrightarrow \text{NORMALIZED DATA} \longrightarrow \text{DLP / PRIVACY REDACTION} \longrightarrow \text{REMOTE AI}$$
 
 - **Strict Mode (Default):** Sanitizes absolute filesystem paths, Windows usernames (`C:\Users\<USER>`), Linux users (`/home/<USER>`), hostnames, IP subnets, API keys, credentials, and private tokens before generating reports or sending data to an optional LLM.
 - **DLP Transmission Gate:** If sensitive unredacted credentials or keys are detected in the payload destined for remote transmission, 0206 triggers `BLOCK_REMOTE_TRANSMISSION` and automatically falls back to offline deterministic evaluation.
-- **Offline Mode:** Guarantees zero external network socket creation (`--offline`).
+- **Offline Semantics (`--offline`):** Disables all remote AI requests, reputation lookups, and external enrichment APIs. (Note: Does not claim OS-level network isolation unless run inside a network-isolated container or VM).
+- **Default Privacy-Safe Exports:** Standard output files (`evidence.json`, `findings.json`, `report.*`) are sanitized by default. Raw unredacted internal evidence is only exported when explicitly requested via `--export-raw-evidence` to `evidence.raw.json`.
 
 ---
 
-## 🤖 Grounded AI Architecture
+## 🤖 Non-Authoritative AI Architecture
 
 AI in 0206 serves strictly as an **interpretation layer**, never as an evidence authority:
 
 - **What AI CAN do:** Contextualize narrative summaries, explain relationships between findings, propose investigative hypotheses, and prioritize next reverse engineering steps.
 - **What AI CANNOT do:**
-  - Cannot override the deterministic threat score.
+  - Cannot override the deterministic threat score or threat level.
   - Cannot invent file hashes, IP addresses, domains, or registry keys.
   - Cannot claim a behavior exists without citing a verified `Evidence ID` (e.g. `E-0014`).
   - Unsupported claims are automatically **REJECTED** or **DOWNGRADED** by the `GroundingValidator`.
@@ -184,71 +224,46 @@ Supported AI Providers:
 
 ---
 
-## ⚙️ Tool Adapters & Capabilities (3-Tier Model)
-
-| Tier | Category | Tools Included | Requirements |
-| :--- | :--- | :--- | :--- |
-| **Tier 1 (Core)** | Built-in Core | `pefile`, `capstone`, `scapy`, `python-docx` | Installed with base package |
-| **Tier 2 (Open Source)** | Optional Analyzers | `YARA`, `capa`, `Ghidra`, `radare2`, `pe-sieve`, `FLOSS` | Optional system binaries or extras |
-| **Tier 3 (Proprietary)** | Optional Integrations | `IDA Pro`, `x64dbg`, `WinDbg` | User-provided external licenses |
-| **Tier 4 (Agent / Protocol)** | Optional Protocol | `MCP` (Model Context Protocol) | Optional external MCP server |
-
-*If an optional tool is missing, 0206 records `NOT_INSTALLED` or `SKIPPED` in the audit manifest and continues execution without crashing.*
-
----
-
-## 📋 Analysis Profiles
-
-Choose execution profiles tailored to the environment:
-
-- `--profile minimal`: Core metadata and file hashes only. Ultra-fast triage.
-- `--profile basic`: Minimal + static PE triage, Capstone code triage, reputation hash lookup, basic behavioral artifacts.
-- `--profile standard` *(Default)*: Basic + streaming PCAP analysis, Procmon CSV normalization, Regshot diffs, YARA, capa.
-- `--profile advanced`: Standard + Ghidra headless, radare2, pe-sieve, FLOSS.
-- `--profile full`: All available open-source and proprietary analyzers.
-- `--adaptive`: Dynamically inspects host capabilities and executes all available analyzers safely.
-- `--portable`: Enforces offline mode, disables proprietary tools, and scrubs local machine paths.
-
----
-
-## 💻 Complete CLI Reference
+## 💻 CLI Reference
 
 ```bash
 # General Syntax
 0206 <subcommand> [options]
 
-# 1. Analyze a malware sample
+# 1. Analyze a malware sample (interactive mode)
 0206 analyze sample.exe
 
 # 2. Analyze with behavioral telemetry artifacts
 0206 analyze sample.exe --pcap network.pcap --procmon procmon.csv --regshot regshot.txt
 
-# 3. Adaptive mode: dynamically detect environment and run available tools
-0206 analyze sample.exe --adaptive
-
-# 4. Enforce 100% offline analysis
+# 3. Enforce 100% offline analysis (no remote AI, no external APIs)
 0206 analyze sample.exe --offline
 
-# 5. Specify execution profile
-0206 analyze sample.exe --profile basic
-0206 analyze sample.exe --profile advanced
+# 4. Export unredacted raw internal evidence (opt-in)
+0206 analyze sample.exe --offline --export-raw-evidence
 
-# 6. Apply custom YARA rules
-0206 analyze sample.exe --yara-rules /path/to/rules.yar
+# 5. Machine-readable JSON output to stdout
+0206 analyze sample.exe --offline --json
 
-# 7. Use custom SANS-style DOCX report template
-0206 analyze sample.exe --template /path/to/template.docx
+# 6. Quiet mode (minimal logs)
+0206 analyze sample.exe --offline --quiet
+
+# 7. Disable ANSI color codes
+0206 analyze sample.exe --offline --no-color
 
 # 8. Run system doctor and tool diagnostics
 0206 doctor
 
-# 9. Run automated offline self-test suite
+# 9. List detected tool capabilities
+0206 capabilities
+
+# 10. Run automated offline self-test suite
 0206 selftest
 
-# 10. Validate a custom DOCX report template
+# 11. Validate a custom DOCX report template
 0206 validate-template template.docx
 
-# 11. Inspect an audit manifest
+# 12. Inspect an audit manifest
 0206 manifest output/analysis_manifest.json
 ```
 
@@ -260,18 +275,18 @@ Each analysis session creates a self-contained case directory:
 
 ```
 output/
-├── analysis_manifest.json     # Complete execution environment, timings, tool versions, and output hashes
+├── analysis_manifest.json     # Execution environment, timings, tool versions, resource limits, and output hashes
 ├── analysis_manifest.sha256   # Detached cryptographic hash of the manifest
-├── evidence.json              # Canonical list of all fingerprinted EvidenceRecords
+├── evidence.json              # Sanitized privacy-safe catalog of fingerprinted EvidenceRecords
+├── evidence.raw.json          # Raw unredacted internal evidence (only generated if --export-raw-evidence specified)
 ├── findings.json              # Derived technical findings and confidence scores
-├── assessment.json            # Deterministic threat score, classification, and score breakdown
+├── assessment.json            # Authoritative threat score, classification, and score breakdown
 ├── iocs.json                  # Extracted host and network indicators of compromise
-├── coverage.json              # Analysis coverage across all 25 analysis domains
+├── coverage.json              # Analysis coverage across all analysis domains
 ├── report.json                # Complete machine-readable session deliverable
-├── report.md                  # Two-stage executive and technical Markdown report
+├── report.md                  # Canonical 23-section executive and technical Markdown report
 ├── report.docx                # Professional Word document (generic or template-adapted)
-├── artifacts/                 # Collected intermediate telemetry files
-└── figures/                   # Visual diagrams and entropy plots
+└── artifacts/                 # Collected intermediate telemetry files
 ```
 
 ---
@@ -282,7 +297,7 @@ output/
 
 1. **Static Disassembly Limits:** Capstone static triage disassembles starting at the PE entry point. It does not replace manual interactive reverse engineering in IDA or Ghidra for heavily obfuscated control flow, opaque predicates, or packed binaries.
 2. **Dynamic Execution Safety:** 0206 will **never** execute hostile binaries directly on the host machine. Dynamic analysis is performed by ingesting recorded telemetry artifacts (PCAP, Procmon) or executing within an external isolated VM/sandbox.
-3. **Reputation Lookup Boundaries:** Reputation queries are strictly **hash-based**. 0206 will never upload suspicious binary contents to third-party reputation APIs.
+3. **Reputation Lookup Boundaries:** Reputation queries are strictly **hash-based**. 0206 will never upload suspicious binary contents to third-party reputation APIs. If no API key is provided or offline mode is set, reputation stage completes with `NOT_CHECKED` without blocking analysis.
 4. **Offline Heuristics:** In offline mode, narrative summaries are deterministically compiled from correlated findings without invoking remote AI models.
 
 ---

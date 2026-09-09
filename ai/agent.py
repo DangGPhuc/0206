@@ -15,7 +15,7 @@ from pydantic import BaseModel, Field
 
 from core.evidence import EvidenceStore
 from core.findings import Finding, FindingEngine, Assessment
-from core.privacy import PrivacyRedactor, PrivacyMode
+from core.privacy import PrivacyRedactor, PrivacyMode, DLPStatus, DLPViolationError
 from ai.prompts import GROUNDED_SYSTEM_PROMPT, GROUNDED_USER_PROMPT_TEMPLATE
 
 
@@ -126,7 +126,7 @@ class LLMThreatSynthesizer:
 
         client = OpenAI(**client_kwargs)
 
-        # Redact evidence and findings BEFORE sending to LLM
+        # Redact evidence and findings BEFORE formatting prompts
         clean_evidence = self.privacy_redactor.redact(evidence_store.to_dict()[:50])
         clean_findings = self.privacy_redactor.redact([f.model_dump() for f in findings])
 
@@ -134,6 +134,19 @@ class LLMThreatSynthesizer:
             evidence_json=json.dumps(clean_evidence, indent=2),
             findings_json=json.dumps(clean_findings, indent=2)
         )
+
+        # Immediate pre-flight DLP audit on the exact prompts and provider before remote request (Phase 3 & P0.3)
+        audit_payload = {
+            "provider": self.provider,
+            "model": self.model,
+            "evidence": clean_evidence,
+            "findings": clean_findings,
+            "system_prompt": GROUNDED_SYSTEM_PROMPT,
+            "user_prompt": user_prompt
+        }
+        audit_res = self.privacy_redactor.audit_for_transmission(audit_payload)
+        if not audit_res.is_safe or audit_res.status == DLPStatus.BLOCKED:
+            raise DLPViolationError(f"DLP transmission gate blocked request: {'; '.join(audit_res.violations)}")
 
         response = client.chat.completions.create(
             model=self.model,
@@ -294,8 +307,14 @@ class LLMThreatSynthesizer:
         exec_summary = ai_dict.get("executive_summary") or baseline.summary
         add_decision("executive_summary", AIFieldStatus.ACCEPTED, "Grounded executive narrative accepted.", None, None)
 
-        recommendations = ai_dict.get("incident_recommendations") or baseline.recommendations
-        add_decision("recommendations", AIFieldStatus.ACCEPTED, "Advisory response recommendations accepted.", None, None)
+        if not findings or baseline.threat_score == 0:
+            recommendations = baseline.recommendations
+            resolved_purpose = baseline.purpose or "NOT_ESTABLISHED"
+            add_decision("recommendations", AIFieldStatus.REJECTED, "Threat score is 0 / no findings; active incident containment suppressed.", None, None)
+        else:
+            recommendations = ai_dict.get("incident_recommendations") or baseline.recommendations
+            resolved_purpose = ai_dict.get("purpose", baseline.purpose)
+            add_decision("recommendations", AIFieldStatus.ACCEPTED, "Advisory response recommendations accepted.", None, None)
 
         return Assessment(
             assessment_id=baseline.assessment_id,
@@ -307,13 +326,18 @@ class LLMThreatSynthesizer:
             score_breakdown=baseline.score_breakdown,
             summary=exec_summary,
             key_functionality=ai_dict.get("key_functionality", baseline.key_functionality),
-            purpose=ai_dict.get("purpose", baseline.purpose),
+            purpose=resolved_purpose,
             persistence_assessment=baseline.persistence_assessment,
             runtime_confirmation_status=baseline.runtime_confirmation_status,
+            coverage=baseline.coverage,
             mitre_techniques=validated_mitre,
             host_iocs=baseline.host_iocs,
             network_iocs=baseline.network_iocs,
             recommendations=recommendations,
             supporting_finding_ids=baseline.supporting_finding_ids,
+            evidence_graph_nodes=baseline.evidence_graph_nodes,
+            confidence=baseline.confidence,
+            classification_confidence=baseline.classification_confidence,
+            analysis_confidence=baseline.analysis_confidence,
             ai_validation=val_result.model_dump()
         )

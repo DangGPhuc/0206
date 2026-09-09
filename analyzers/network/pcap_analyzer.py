@@ -21,6 +21,14 @@ from core.schemas import AnalysisDomain, EvidenceState
 from core.evidence import EvidenceStore
 from core.manifest import hash_file_streaming
 
+import warnings
+warnings.filterwarnings("ignore", module="scapy.*")
+try:
+    from cryptography.utils import CryptographyDeprecationWarning
+    warnings.filterwarnings("ignore", category=CryptographyDeprecationWarning)
+except Exception:
+    pass
+
 try:
     from scapy.utils import PcapReader
     from scapy.layers.inet import IP, TCP, UDP

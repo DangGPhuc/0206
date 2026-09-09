@@ -8,7 +8,7 @@ Enforces:
 from abc import ABC, abstractmethod
 from enum import Enum
 from typing import List, Optional, Dict, Any
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ConfigDict
 
 
 class ReputationStatus(str, Enum):
@@ -18,6 +18,7 @@ class ReputationStatus(str, Enum):
     NOT_FOUND = "NOT_FOUND"
     LOOKUP_FAILED = "LOOKUP_FAILED"
     NOT_CHECKED = "NOT_CHECKED"
+    SKIPPED_OFFLINE = "SKIPPED_OFFLINE"
 
 
 class ReputationResult(BaseModel):
@@ -34,8 +35,7 @@ class ReputationResult(BaseModel):
     privacy_policy: str = "HASH_LOOKUP_ONLY"
     details: str = ""
 
-    class Config:
-        use_enum_values = True
+    model_config = ConfigDict(use_enum_values=True)
 
 
 class ReputationProvider(ABC):

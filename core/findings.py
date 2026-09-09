@@ -115,10 +115,10 @@ class FindingEngine:
                     f"While this enables self-modifying code or unpacking stubs, runtime process injection is [NOT_CONFIRMED]."
                 ),
                 source_evidence_ids=[e.evidence_id for e in rwx_active],
-                mitre_attack_id="T1055",
+                mitre_attack_id="T1027",
                 mitre_tactic="Defense Evasion",
                 status=FindingStatus.OBSERVED_BEHAVIOR,
-                why_it_matters="Executable memory that is also writable provides an ideal environment for in-memory code unpacking."
+                why_it_matters="Executable memory that is also writable provides an environment for self-modifying code or unpacked payload stubs; does not confirm process injection without active foreign process memory write."
             )
 
         # 2. Packing Indicators

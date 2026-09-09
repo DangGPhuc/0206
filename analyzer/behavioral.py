@@ -11,7 +11,15 @@ import re
 import math
 import statistics
 from pathlib import Path
-from typing import Dict, List, Any, Optional
+from typing import Dict, List, Any, Optional, Tuple
+import warnings
+warnings.filterwarnings("ignore", module="scapy.*")
+try:
+    from cryptography.utils import CryptographyDeprecationWarning
+    warnings.filterwarnings("ignore", category=CryptographyDeprecationWarning)
+except Exception:
+    pass
+
 from scapy.all import PcapReader, DNS, DNSQR, DNSRR, IP, TCP, UDP, Raw
 
 from config import (

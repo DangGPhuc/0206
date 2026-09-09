@@ -122,7 +122,10 @@ class TestAuditPhases(unittest.TestCase):
     # 4. Adapter Statuses (Phase 7)
     # -------------------------------------------------------------
     def test_adapter_statuses_enum(self):
-        expected_statuses = {"DETECTED", "READY", "FUNCTIONAL", "FAILED", "NOT_INSTALLED", "NOT_SUPPORTED"}
+        expected_statuses = {
+            "DETECTED", "READY", "FUNCTIONAL", "FAILED", "NOT_INSTALLED",
+            "NOT_SUPPORTED", "TIMEOUT", "CAPABILITY_DETECTION_ONLY"
+        }
         actual_statuses = {s.value for s in AdapterStatus}
         self.assertEqual(expected_statuses, actual_statuses)
 

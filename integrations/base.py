@@ -14,18 +14,20 @@ from pathlib import Path
 from typing import List, Dict, Any, Optional, Tuple
 from datetime import datetime, timezone
 import time
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ConfigDict
 
 from core.evidence import EvidenceStore, EvidenceRecord, EvidenceState
 
 
 class AdapterStatus(str, Enum):
+    NOT_INSTALLED = "NOT_INSTALLED"
     DETECTED = "DETECTED"
     READY = "READY"
     FUNCTIONAL = "FUNCTIONAL"
     FAILED = "FAILED"
-    NOT_INSTALLED = "NOT_INSTALLED"
+    TIMEOUT = "TIMEOUT"
     NOT_SUPPORTED = "NOT_SUPPORTED"
+    CAPABILITY_DETECTION_ONLY = "CAPABILITY_DETECTION_ONLY"
 
 
 class AdapterResult(BaseModel):
@@ -44,8 +46,15 @@ class AdapterResult(BaseModel):
     warnings: List[str] = Field(default_factory=list)
     errors: List[str] = Field(default_factory=list)
 
-    class Config:
-        use_enum_values = True
+    @property
+    def finished_at(self) -> str:
+        return self.completed_at
+
+    @finished_at.setter
+    def finished_at(self, val: str):
+        self.completed_at = val
+
+    model_config = ConfigDict(use_enum_values=True)
 
 
 class AnalyzerAdapter(ABC):

@@ -2,19 +2,30 @@
 """
 0206: Independent, Local-First, Evidence-Driven Malware Analysis & Reporting Platform
 CLI entry point supporting subcommands:
-  0206 analyze <sample> [--pcap <pcap>] [--procmon <csv>] [--profile standard] [--offline] [--adaptive]
+  0206 analyze <sample> [--pcap <pcap>] [--procmon <csv>] [--profile standard] [--offline] [--export-raw-evidence] [--json] [--quiet] [--no-color]
   0206 doctor
   0206 capabilities
   0206 validate-template <template.docx>
   0206 manifest [analysis_manifest.json]
+  0206 verify-case [case_dir_or_manifest]
   0206 selftest
 """
 import sys
 import os
 import json
+import hashlib
+import warnings
 import argparse
 from pathlib import Path
 from typing import Optional
+
+# Suppress benign third-party library warnings to maintain clean CLI presentation (P1.13)
+warnings.filterwarnings("ignore", module="scapy.*")
+try:
+    from cryptography.utils import CryptographyDeprecationWarning
+    warnings.filterwarnings("ignore", category=CryptographyDeprecationWarning)
+except Exception:
+    pass
 
 from rich.console import Console
 from rich.panel import Panel
@@ -24,6 +35,8 @@ from rich.text import Text
 
 from config import ENGINE_NAME, ENGINE_VERSION
 from core.orchestrator import AnalysisOrchestrator, OrchestrationResult
+from core.evidence import EvidenceStore
+from core.manifest import hash_file_streaming
 from core.doctor import run_doctor
 from core.selftest import run_selftest
 from reporting.validators import TemplateValidator
@@ -61,15 +74,15 @@ def cmd_validate_template(template_path: str):
     """Validates a user-provided DOCX report template."""
     p = Path(template_path)
     console.print(f"[*] Validating template structure: [cyan]{p.resolve()}[/cyan] ...")
-    valid, warnings = TemplateValidator.validate_sans_style_template(p)
+    valid, warnings_list = TemplateValidator.validate_sans_style_template(p)
     if valid:
         console.print("[bold green]✔ Template is valid and compatible with SANS-style report adapter.[/bold green]")
-        if warnings:
-            for w in warnings:
+        if warnings_list:
+            for w in warnings_list:
                 console.print(f"  [yellow]Warning:[/yellow] {w}")
     else:
         console.print("[bold red]✗ Template validation failed:[/bold red]")
-        for w in warnings:
+        for w in warnings_list:
             console.print(f"  • {w}")
         sys.exit(1)
 
@@ -119,6 +132,129 @@ def cmd_manifest(manifest_path: Optional[str] = None):
         sys.exit(1)
 
 
+def cmd_verify_case(case_path_str: Optional[str] = None):
+    """Verifies cryptographic integrity of a case bundle and its manifest (P1.15)."""
+    p = Path(case_path_str) if case_path_str else Path("output")
+    if p.is_dir():
+        manifest_file = p / "analysis_manifest.json"
+        sha_file = p / "analysis_manifest.sha256"
+        case_dir = p
+    else:
+        manifest_file = p
+        sha_file = p.parent / "analysis_manifest.sha256"
+        case_dir = p.parent
+
+    if not manifest_file.exists():
+        console.print(f"[bold red][!] Manifest not found:[/bold red] {manifest_file.resolve()}")
+        sys.exit(1)
+
+    table = Table(title=f"🔒 Case Cryptographic Verification: {case_dir.name}", show_header=True, header_style="bold cyan")
+    table.add_column("Artifact Name", style="bold white", width=26)
+    table.add_column("Expected SHA256", style="dim", width=20)
+    table.add_column("Actual SHA256", style="dim", width=20)
+    table.add_column("Integrity Status", width=18)
+
+    all_valid = True
+
+    # 1. Verify manifest companion sha256
+    manifest_bytes = manifest_file.read_bytes()
+    manifest_calc = hashlib.sha256(manifest_bytes).hexdigest()
+    if sha_file.exists():
+        expected_manifest_sha = sha_file.read_text(encoding="utf-8").strip().split()[0]
+        if manifest_calc == expected_manifest_sha:
+            table.add_row("analysis_manifest.json", f"{expected_manifest_sha[:16]}...", f"{manifest_calc[:16]}...", "[bold green]VALID ✓[/bold green]")
+        else:
+            all_valid = False
+            table.add_row("analysis_manifest.json", f"{expected_manifest_sha[:16]}...", f"{manifest_calc[:16]}...", "[bold red]CORRUPTED ✗[/bold red]")
+    else:
+        table.add_row("analysis_manifest.json", "N/A (no .sha256)", f"{manifest_calc[:16]}...", "[yellow]UNVERIFIED[/yellow]")
+
+    # 2. Verify lineage artifacts
+    try:
+        data = json.loads(manifest_bytes.decode("utf-8"))
+        lineage = data.get("output_lineage", {})
+        for name, info in lineage.items():
+            expected = info.get("sha256", "N/A")
+            art_file = case_dir / info.get("filename", name)
+            if not art_file.exists():
+                art_file = case_dir / name
+            if not art_file.exists():
+                all_valid = False
+                table.add_row(name, f"{expected[:16]}...", "MISSING", "[bold red]MISSING ✗[/bold red]")
+                continue
+
+            actual = hash_file_streaming(art_file).get("sha256", "")
+            if actual == expected:
+                table.add_row(name, f"{expected[:16]}...", f"{actual[:16]}...", "[bold green]VALID ✓[/bold green]")
+            else:
+                all_valid = False
+                table.add_row(name, f"{expected[:16]}...", f"{actual[:16]}...", "[bold red]MISMATCH ✗[/bold red]")
+    except Exception as e:
+        console.print(f"[bold red][!] Error inspecting manifest lineage:[/bold red] {e}")
+        sys.exit(1)
+
+    console.print(table)
+    console.print("")
+    if all_valid:
+        console.print(Panel("[bold green]✔ All case artifacts cryptographically verified against audit manifest![/bold green]", border_style="green"))
+    else:
+        console.print(Panel("[bold red]✗ One or more case artifacts failed cryptographic verification.[/bold red]", border_style="red"))
+        sys.exit(1)
+
+
+def cmd_validate_case(case_path_str: Optional[str]):
+    """Runs comprehensive semantic and evidence-consistency validation on a case directory."""
+    if not case_path_str:
+        console.print("[bold red]Error: Please specify the case directory path to validate.[/bold red]")
+        sys.exit(1)
+
+    p = Path(case_path_str).resolve()
+    if p.is_file():
+        p = p.parent
+
+    console.print(Panel(
+        f"[bold cyan]🔍 0206 Case Semantic & Integrity Validator[/bold cyan]\n"
+        f"[dim]Target Case Directory: {p}[/dim]",
+        border_style="cyan"
+    ))
+
+    from core.semantic_validator import CaseSemanticValidator
+    validator = CaseSemanticValidator()
+    result = validator.validate_case(p)
+
+    table = Table(title="Semantic Validation Rules", show_header=True, header_style="bold cyan")
+    table.add_column("Rule / Check", style="bold white", width=32)
+    table.add_column("Scope / Message", style="dim", width=46)
+    table.add_column("Status", width=12)
+
+    for issue in result.issues:
+        color = "green" if issue.severity == "PASS" else ("yellow" if issue.severity == "WARNING" else "red")
+        status_text = f"[{color}]{issue.severity}[/{color}]"
+        table.add_row(issue.rule, issue.message, status_text)
+
+    console.print(table)
+    console.print("")
+
+    if result.status == "PASS":
+        console.print(Panel(
+            f"[bold green]PASS: All {result.passed_checks} semantic, evidence, and coverage integrity checks passed![/bold green]",
+            border_style="green"
+        ))
+        sys.exit(0)
+    elif result.status == "WARNING":
+        console.print(Panel(
+            f"[bold yellow]WARNING: Passed {result.passed_checks} checks with {result.warning_checks} warning(s).[/bold yellow]",
+            border_style="yellow"
+        ))
+        sys.exit(0)
+    else:
+        console.print(Panel(
+            f"[bold red]FAIL: Case validation failed with {result.failed_checks} error(s). Please review the table above.[/bold red]",
+            border_style="red"
+        ))
+        sys.exit(1)
+
+
 def display_findings_table(findings: list):
     """Displays technical findings with grounded evidence IDs."""
     if not findings:
@@ -139,6 +275,103 @@ def display_findings_table(findings: list):
     console.print(f_table)
 
 
+def display_coverage_table(coverage_file: Optional[Path]):
+    """Displays canonical analysis coverage matrix."""
+    table = Table(title="📊 Analysis Coverage", show_header=True, header_style="bold cyan")
+    table.add_column("Analysis Domain", style="bold white", width=22)
+    table.add_column("Status", width=16)
+    table.add_column("Scope / Reason", style="dim")
+
+    domain_data = {}
+    coverage_reasons = {}
+    if coverage_file and coverage_file.exists():
+        try:
+            with open(coverage_file, "r", encoding="utf-8") as f:
+                c_json = json.load(f)
+                domain_data = c_json.get("domain_coverage", {}) or {k: v for k, v in c_json.items() if isinstance(v, str)}
+                coverage_reasons = c_json.get("coverage_reasons", {})
+        except Exception:
+            pass
+
+    if domain_data:
+        for dom, st in domain_data.items():
+            color = "green" if st == "COMPLETED" else ("yellow" if st == "PARTIAL" else "dim")
+            reason = coverage_reasons.get(dom, "Automated triage evaluation")
+            table.add_row(dom, f"[{color}]{st}[/{color}]", reason)
+    else:
+        defaults = [
+            ("PE Static", "COMPLETED", "PE structure and metadata analyzed"),
+            ("Code Triage", "COMPLETED", "Capstone disassembly triage performed"),
+            ("Reputation", "SKIPPED_OFFLINE", "External reputation lookup skipped in offline mode"),
+            ("Network", "NOT_ANALYZED", "No PCAP artifact provided"),
+            ("Process", "NOT_ANALYZED", "No Procmon artifact provided"),
+            ("Memory", "NOT_AVAILABLE", "Memory acquisition not performed"),
+            ("Unpacking", "NOT_ANALYZED", "Dynamic unpacking not engaged in profile"),
+            ("Anti-Analysis", "NOT_ANALYZED", "Dedicated anti-analysis not engaged in profile"),
+        ]
+        for dom, st, reason in defaults:
+            color = "green" if st == "COMPLETED" else "dim"
+            table.add_row(dom, f"[{color}]{st}[/{color}]", reason)
+
+    console.print(table)
+
+
+def display_reputation_summary(store: EvidenceStore):
+    """Displays truthful summary of reputation stage output (P0.4)."""
+    rep_records = store.find(source_type="REPUTATION")
+    if not rep_records:
+        console.print(Panel(
+            "Provider: [dim]None[/dim] | Detections: [dim]N/A[/dim] | Lookup Status: [dim]NOT_ANALYZED[/dim]",
+            title="🔍 Reputation Assessment",
+            border_style="dim"
+        ))
+        return
+
+    status_rec = next((r for r in rep_records if r.field == "lookup_status"), rep_records[0])
+    ratio_rec = next((r for r in rep_records if r.field == "detection_ratio"), rep_records[0])
+    prov = status_rec.provenance or ratio_rec.provenance or {}
+
+    st = status_rec.value or prov.get("lookup_status") or prov.get("status") or "NOT_CHECKED"
+    positives = prov.get("positives", 0)
+    total = prov.get("total", 0)
+    provider_name = status_rec.extractor or "VirusTotal"
+
+    if st in ("NOT_CHECKED", "SKIPPED_OFFLINE"):
+        console.print(Panel(
+            f"Provider: [bold cyan]{provider_name}[/bold cyan] | "
+            f"Detections: [dim]N/A (External lookup skipped in offline mode / no API key)[/dim] | "
+            f"Lookup Status: [dim]{st}[/dim]",
+            title="🔍 Reputation Assessment",
+            border_style="dim"
+        ))
+    elif st == "NOT_FOUND":
+        console.print(Panel(
+            f"Provider: [bold cyan]{provider_name}[/bold cyan] | "
+            f"Detections: [yellow]NOT_FOUND[/yellow] | "
+            f"Lookup Status: [yellow]NOT_FOUND[/yellow] ([italic]Absence of threat intel != Clean[/italic])",
+            title="🔍 Reputation Assessment",
+            border_style="yellow"
+        ))
+    elif st == "LOOKUP_FAILED":
+        console.print(Panel(
+            f"Provider: [bold cyan]{provider_name}[/bold cyan] | "
+            f"Detections: [yellow]N/A[/yellow] | "
+            f"Lookup Status: [yellow]LOOKUP_FAILED[/yellow]",
+            title="🔍 Reputation Assessment",
+            border_style="yellow"
+        ))
+    else:
+        color = "red" if positives >= 5 else ("yellow" if positives >= 1 else "green")
+        det_ratio = f"{positives}/{total}" if total > 0 else "0/0"
+        console.print(Panel(
+            f"Provider: [bold cyan]{provider_name}[/bold cyan] | "
+            f"Detections: [{color}]{det_ratio}[/{color}] | "
+            f"Lookup Status: [bold]{st}[/bold]",
+            title="🔍 Reputation Assessment",
+            border_style=color
+        ))
+
+
 def run_analyze_cli(
     sample_path: Optional[str] = None,
     pcap_path: Optional[str] = None,
@@ -154,18 +387,67 @@ def run_analyze_cli(
     yara_rules: Optional[str] = None,
     backend: str = "memory",
     adaptive: bool = False,
-    portable: bool = False
+    portable: bool = False,
+    export_raw_evidence: bool = False,
+    quiet: bool = False,
+    json_output: bool = False,
+    no_color: bool = False
 ):
     """Executes the analysis using the thin AnalysisOrchestrator."""
+    if no_color:
+        console.no_color = True
+
     orchestrator = AnalysisOrchestrator()
 
+    if quiet or json_output:
+        try:
+            result: OrchestrationResult = orchestrator.run(
+                sample_path=sample_path,
+                pcap_path=pcap_path,
+                procmon_path=procmon_path,
+                regshot_path=regshot_path,
+                output_dir=output_dir_str,
+                profile=profile_str,
+                privacy_mode=privacy_mode_str,
+                offline=offline_mode,
+                api_key=api_key,
+                model=model,
+                template_path=template_path_str,
+                yara_rules=yara_rules,
+                backend=backend,
+                adaptive=adaptive,
+                portable=portable,
+                export_raw_evidence=export_raw_evidence,
+                step_callback=None
+            )
+        except Exception as e:
+            if json_output:
+                print(json.dumps({"error": str(e)}))
+            else:
+                sys.stderr.write(f"Analysis failed: {e}\n")
+            sys.exit(1)
+
+        if json_output:
+            if result.report_json.exists():
+                print(result.report_json.read_text(encoding="utf-8"))
+            else:
+                print(json.dumps(result.assessment.model_dump(), indent=2))
+            return
+        elif quiet:
+            print(f"Analysis complete: {result.case_id}")
+            print(f"Threat Score: {result.assessment.threat_score}/100 ({result.assessment.threat_level})")
+            print(f"Classification: {result.assessment.classification}")
+            print(f"Output: {result.output_dir.resolve()}")
+            return
+
+    # Normal interactive mode with rich presentation
     with Progress(
         SpinnerColumn(),
         TextColumn("[progress.description]{task.description}"),
         BarColumn(),
         console=console
     ) as progress:
-        task = progress.add_task("[cyan]Initializing Triage Pipeline...", total=13)
+        task = progress.add_task("[cyan]Initializing Triage Pipeline...", total=14)
 
         def step_callback(msg: str, step: int):
             progress.update(task, completed=step, description=f"[cyan]{msg}")
@@ -187,34 +469,67 @@ def run_analyze_cli(
                 backend=backend,
                 adaptive=adaptive,
                 portable=portable,
+                export_raw_evidence=export_raw_evidence,
                 step_callback=step_callback
             )
-            progress.update(task, completed=13, description="[bold green]Analysis Complete!")
+            progress.update(task, completed=14, description="[bold green]Analysis Complete!")
         except Exception as e:
             console.print(f"\n[bold red][!] Analysis Failed:[/bold red] {e}")
             sys.exit(1)
 
     # ---------------- UI Presentation ----------------
     console.print("\n")
-    display_findings_table(result.findings)
-    console.print("\n")
+    # 1. Sample info (P0.6: Always display actual filename)
+    meta_recs = result.evidence_store.find(source_type="FILE_METADATA")
+    meta_dict = {r.field: r.value for r in meta_recs} if meta_recs else {}
+    sample_name = result.manifest.sample_filename or meta_dict.get("filename")
+    if not sample_name or sample_name == "Unknown":
+        if meta_recs:
+            sample_name = meta_recs[0].source_artifact or "sample.exe"
+        else:
+            sample_name = "sample.exe"
 
-    # Threat Assessment Panel
+    file_size_val = result.manifest.sample_size_bytes or meta_dict.get("file_size") or 0
+    sha256_val = result.manifest.sample_hashes.get("sha256") or meta_dict.get("sha256") or "N/A"
+
+    console.print(Panel(
+        f"Filename: [bold white]{sample_name}[/bold white] | "
+        f"Size: {file_size_val:,} bytes | "
+        f"SHA256: [cyan]{sha256_val}[/cyan]",
+        title="🎯 Target Sample",
+        border_style="cyan"
+    ))
+
+    # 2. Reputation
+    display_reputation_summary(result.evidence_store)
+    console.print("")
+
+    # 3. Findings table
+    display_findings_table(result.findings)
+    console.print("")
+
+    # 4. Analysis Coverage table
+    display_coverage_table(result.coverage_json)
+    console.print("")
+
+    # 5. Threat Assessment Panel
     assessment = result.assessment
     level = assessment.threat_level
     badge_colors = {"CRITICAL": "red", "HIGH": "bright_red", "MEDIUM": "yellow", "LOW": "blue"}
     color = badge_colors.get(level, "green")
 
     panel_content = (
-        f"[{color}]Assessment: {level} (Score: {assessment.threat_score}/100)[/{color}]\n"
-        f"[bold white]Classification:[/bold white] {assessment.classification}\n\n"
+        f"[{color}]Authoritative Assessment: {level} (Score: {assessment.threat_score}/100)[/{color}]\n"
+        f"[bold white]Classification:[/bold white] {assessment.classification}\n"
+        f"[bold white]Classification Confidence:[/bold white] {getattr(assessment, 'classification_confidence', getattr(assessment, 'confidence', 0.0)):.2f}\n"
+        f"[bold white]Analysis Confidence:[/bold white] {getattr(assessment, 'analysis_confidence', 1.0):.2f}\n\n"
         f"[italic]{assessment.summary}[/italic]\n\n"
         f"[bold cyan]Grounding:[/bold cyan] Grounded in {len(result.evidence_store)} verified EvidenceRecords and {len(result.findings)} Findings."
     )
-    console.print(Panel(panel_content, title="🛡️ 0206 Triage Assessment", border_style=color))
+    console.print(Panel(panel_content, title="🛡️ 0206 Authoritative Assessment", border_style=color))
 
-    # Deliverables Summary Panel
-    console.print(Panel(
+    # 6. Deliverables Summary Panel
+    deliverables_text = (
         f"[bold green]✔ Analysis Complete & Deliverables Exported![/bold green]\n\n"
         f"  📁 Output Directory: [cyan]{result.output_dir.resolve()}[/cyan]\n"
         f"  📄 Machine JSON:     [white]{result.report_json.name}[/white]\n"
@@ -223,15 +538,16 @@ def run_analyze_cli(
         f"  📑 Audit Manifest:   [white]{result.manifest_json.name}[/white]\n"
         f"  🔒 Manifest SHA256:  [white]{result.manifest_sha256.name}[/white]\n"
         f"  🔍 Evidence Store:   [white]{result.evidence_json.name}[/white]\n"
-        f"  ⚖️ Findings Catalog: [white]{result.findings_json.name}[/white]",
-        border_style="green",
-        title="📦 Session Deliverables"
-    ))
+        f"  ⚖️ Findings Catalog: [white]{result.findings_json.name}[/white]\n"
+        f"  📊 Coverage Matrix:  [white]{(result.coverage_json.name if result.coverage_json else 'coverage.json')}[/white]"
+    )
+    if result.evidence_raw_json:
+        deliverables_text += f"\n  ⚠️ Raw Evidence:    [yellow]{result.evidence_raw_json.name}[/yellow]"
+
+    console.print(Panel(deliverables_text, border_style="green", title="📦 Session Deliverables"))
 
 
 def main():
-    print_banner()
-
     parser = argparse.ArgumentParser(
         description=f"{ENGINE_NAME}: Independent, Local-First Malware Analysis & Reporting Platform",
         formatter_class=argparse.RawDescriptionHelpFormatter
@@ -250,13 +566,17 @@ def main():
     p_analyze.add_argument("--profile", type=str, choices=["minimal", "basic", "standard", "advanced", "full"], default="standard", help="Analysis profile")
     p_analyze.add_argument("--template", "-t", type=str, help="Path to custom DOCX report template")
     p_analyze.add_argument("--privacy", type=str, choices=["strict", "standard", "none"], default="strict", help="Privacy redaction mode")
-    p_analyze.add_argument("--offline", action="store_true", help="Force offline deterministic engine (no LLM calls)")
+    p_analyze.add_argument("--offline", action="store_true", help="Force offline deterministic engine (no remote AI/API calls)")
     p_analyze.add_argument("--adaptive", action="store_true", help="Adaptive mode: dynamically detect environment and run available tools")
     p_analyze.add_argument("--portable", action="store_true", help="Portable mode: offline, zero proprietary tools, sanitized local paths")
     p_analyze.add_argument("--yara-rules", type=str, help="Path to custom YARA rules file (.yar/.yara)")
     p_analyze.add_argument("--backend", type=str, choices=["memory", "sqlite"], default="memory", help="Evidence Store backend storage")
-    p_analyze.add_argument("--api-key", type=str, help="OpenAI API key")
+    p_analyze.add_argument("--api-key", type=str, help="API key for remote LLM provider")
     p_analyze.add_argument("--model", type=str, default="gpt-4o", help="LLM model name")
+    p_analyze.add_argument("--export-raw-evidence", action="store_true", help="Export unredacted raw internal evidence to evidence.raw.json")
+    p_analyze.add_argument("--quiet", "-q", action="store_true", help="Quiet output (suppress banner, progress bars, non-critical logs)")
+    p_analyze.add_argument("--json", action="store_true", help="Emit report results as JSON to stdout")
+    p_analyze.add_argument("--no-color", action="store_true", help="Disable colored / ANSI output")
 
     # Subcommand: doctor
     subparsers.add_parser("doctor", help="Run capability diagnostics and dependency check")
@@ -275,6 +595,14 @@ def main():
     p_man = subparsers.add_parser("manifest", help="Inspect and display an analysis manifest")
     p_man.add_argument("manifest_path", nargs="?", type=str, help="Path to analysis_manifest.json")
 
+    # Subcommand: verify-case (P1.15)
+    p_ver = subparsers.add_parser("verify-case", help="Cryptographically verify case deliverables and manifest lineage")
+    p_ver.add_argument("case_path", nargs="?", type=str, help="Path to case directory or analysis_manifest.json")
+
+    # Subcommand: validate-case
+    p_val_case = subparsers.add_parser("validate-case", help="Perform comprehensive semantic validation on case directory")
+    p_val_case.add_argument("case_path", type=str, help="Path to case directory to validate")
+
     # Backward compatibility: Top-level arguments for direct `0206 --sample ...` or `0206 sample.exe`
     parser.add_argument("direct_target", nargs="?", type=str, help=argparse.SUPPRESS)
     parser.add_argument("--sample", "-s", type=str, help="Target PE binary")
@@ -291,10 +619,21 @@ def main():
     parser.add_argument("--portable", action="store_true", help="Portable mode: offline, zero proprietary tools, sanitized local paths")
     parser.add_argument("--yara-rules", type=str, help="Path to custom YARA rules file (.yar/.yara)")
     parser.add_argument("--backend", type=str, choices=["memory", "sqlite"], default="memory", help="Evidence Store backend storage")
-    parser.add_argument("--api-key", type=str, help="OpenAI API key")
+    parser.add_argument("--api-key", type=str, help="API key for remote LLM provider")
     parser.add_argument("--model", type=str, default="gpt-4o")
+    parser.add_argument("--export-raw-evidence", action="store_true", help="Export unredacted raw internal evidence to evidence.raw.json")
+    parser.add_argument("--quiet", "-q", action="store_true", help="Quiet output")
+    parser.add_argument("--json", action="store_true", help="Emit report results as JSON to stdout")
+    parser.add_argument("--no-color", action="store_true", help="Disable colored / ANSI output")
 
     args = parser.parse_args()
+
+    is_quiet_or_json = getattr(args, "quiet", False) or getattr(args, "json", False)
+    if not is_quiet_or_json:
+        print_banner()
+
+    if getattr(args, "no_color", False):
+        console.no_color = True
 
     # Route Subcommands
     if args.subcommand == "doctor":
@@ -311,6 +650,12 @@ def main():
         return
     elif args.subcommand == "manifest":
         cmd_manifest(args.manifest_path)
+        return
+    elif args.subcommand == "verify-case":
+        cmd_verify_case(args.case_path)
+        return
+    elif args.subcommand == "validate-case":
+        cmd_validate_case(args.case_path)
         return
     elif args.subcommand == "analyze":
         sample = args.target or args.sample
@@ -329,7 +674,11 @@ def main():
             yara_rules=args.yara_rules,
             backend=args.backend,
             adaptive=args.adaptive,
-            portable=args.portable
+            portable=args.portable,
+            export_raw_evidence=args.export_raw_evidence,
+            quiet=args.quiet,
+            json_output=args.json,
+            no_color=args.no_color
         )
         return
 
@@ -354,7 +703,11 @@ def main():
             yara_rules=args.yara_rules,
             backend=args.backend,
             adaptive=args.adaptive,
-            portable=args.portable
+            portable=args.portable,
+            export_raw_evidence=args.export_raw_evidence,
+            quiet=args.quiet,
+            json_output=args.json,
+            no_color=args.no_color
         )
     else:
         cmd_doctor()

@@ -1,70 +1,103 @@
 """
-0206 - AI Validation Unit Tests
-Phase 34: test_ai_validation.py
+Unit Tests for AI Suggestion Validation Engine (P1.11)
+Validates:
+- Unknown evidence IDs => REJECT
+- Valid evidence IDs => ACCEPT
+- Unsupported malware-family claim => DOWNGRADE to heuristic hypothesis
+- Threat score override attempt => REJECT (FindingEngine is authoritative)
 """
 import unittest
-from core.schemas import EvidenceState, AnalysisDomain
 from core.evidence import EvidenceStore
-from core.findings import Finding, Assessment
-from ai.grounding.validator import GroundingValidator
-from ai.validation.schema import AIFieldStatus
+from core.findings import FindingEngine
+from ai.agent import LLMThreatSynthesizer, AIFieldStatus
 
 
 class TestAIValidation(unittest.TestCase):
 
     def setUp(self):
         self.store = EvidenceStore()
-        self.e1 = self.store.create("sample.exe", "IMPORT", "func", "VirtualAlloc", "PEParser", domain=AnalysisDomain.API)
-        self.baseline = Assessment(
-            assessment_id="A-0001",
-            title="Baseline Assessment",
-            threat_level="MEDIUM",
-            threat_score=45,
-            classification="Generic",
-            summary="Deterministic baseline summary"
-        )
-        self.validator = GroundingValidator(self.store)
+        # Create authentic ground truth evidence
+        self.rec1 = self.store.create("sample.exe", "FILE_METADATA", "sha256", "REAL_HASH_1234", "PEStaticAnalyzer")
+        self.rec2 = self.store.create("sample.exe", "PE_IMPORT", "import", "VirtualAllocEx", "PEStaticAnalyzer")
 
-    def test_rejection_of_threat_score_override(self):
-        ai_proposal = {
-            "threat_score": 99,
-            "threat_level": "CRITICAL"
-        }
-        merged, val_result = self.validator.validate_synthesis(ai_proposal, self.baseline)
-        self.assertEqual(merged.threat_score, 45)
-        self.assertEqual(merged.threat_level, "MEDIUM")
-        self.assertIn("threat_score", val_result.rejected_fields)
-        self.assertIn("threat_level", val_result.rejected_fields)
+        self.synthesizer = LLMThreatSynthesizer(provider="offline")
+        engine = FindingEngine(self.store)
+        self.baseline = engine.generate_assessment()
 
-    def test_rejection_of_hallucinated_mitre_technique(self):
+    def test_unknown_evidence_ids_rejected(self):
+        """AI proposals citing fictitious or ungrounded evidence IDs must be rejected."""
         ai_proposal = {
             "mitre_attack": [
                 {
                     "technique_id": "T1055",
                     "technique_name": "Process Injection",
                     "tactic": "Defense Evasion",
-                    "evidence_ids": ["E-9999_NON_EXISTENT"]
+                    "evidence_ids": ["E-FAKE-ID-99999", "E-DOES-NOT-EXIST"]
                 }
             ]
         }
-        merged, val_result = self.validator.validate_synthesis(ai_proposal, self.baseline)
-        self.assertEqual(len(merged.mitre_techniques), 0)
-        self.assertIn("mitre_technique_T1055", val_result.rejected_fields)
 
-    def test_acceptance_of_grounded_mitre_technique(self):
+        validated = self.synthesizer._merge_and_validate(ai_proposal, self.baseline, self.store)
+        self.assertIsNotNone(validated.ai_validation)
+        val_meta = validated.ai_validation
+        self.assertIn("mitre_technique_T1055", val_meta.get("rejected_fields", []))
+
+        # Technique must NOT be in validated mitre_techniques
+        added_techniques = [t for t in validated.mitre_techniques if t.get("technique_id") == "T1055"]
+        self.assertEqual(len(added_techniques), 0)
+
+    def test_valid_evidence_ids_accepted(self):
+        """AI proposals citing authentic, verified Evidence IDs must be accepted."""
         ai_proposal = {
             "mitre_attack": [
                 {
-                    "technique_id": "T1106",
-                    "technique_name": "Native API",
-                    "tactic": "Execution",
-                    "evidence_ids": [self.e1.evidence_id]
+                    "technique_id": "T1055.001",
+                    "technique_name": "Dynamic-link Library Injection",
+                    "tactic": "Defense Evasion",
+                    "evidence_ids": [self.rec2.evidence_id]
                 }
             ]
         }
-        merged, val_result = self.validator.validate_synthesis(ai_proposal, self.baseline)
-        self.assertEqual(len(merged.mitre_techniques), 1)
-        self.assertIn("mitre_technique_T1106", val_result.accepted_fields)
+
+        validated = self.synthesizer._merge_and_validate(ai_proposal, self.baseline, self.store)
+        val_meta = validated.ai_validation
+        self.assertIn("mitre_technique_T1055.001", val_meta.get("accepted_fields", []))
+
+        # Technique must be present with the cited evidence ID
+        added_techniques = [t for t in validated.mitre_techniques if t.get("technique_id") == "T1055.001"]
+        self.assertEqual(len(added_techniques), 1)
+        self.assertEqual(added_techniques[0]["evidence_ids"], [self.rec2.evidence_id])
+
+    def test_unsupported_malware_family_downgraded(self):
+        """Unsupported malware family claims must be downgraded to unconfirmed hypothesis."""
+        ai_proposal = {
+            "malware_family": "Emotet.Banker.v4",
+            "classification": "Emotet.Banker.v4"
+        }
+
+        validated = self.synthesizer._merge_and_validate(ai_proposal, self.baseline, self.store)
+        val_meta = validated.ai_validation
+        self.assertIn("malware_family", val_meta.get("downgraded_fields", []))
+
+        # Classification must indicate unconfirmed hypothesis
+        self.assertIn("Hypothesis: Emotet.Banker.v4", validated.classification)
+        self.assertIn("[UNCONFIRMED]", validated.classification)
+
+    def test_threat_score_override_rejected(self):
+        """AI cannot override deterministic threat score or threat level."""
+        ai_proposal = {
+            "threat_score": 99,
+            "threat_level": "CRITICAL"
+        }
+
+        validated = self.synthesizer._merge_and_validate(ai_proposal, self.baseline, self.store)
+        val_meta = validated.ai_validation
+        self.assertIn("threat_score", val_meta.get("rejected_fields", []))
+        self.assertIn("threat_level", val_meta.get("rejected_fields", []))
+
+        # Deterministic authority preserved
+        self.assertEqual(validated.threat_score, self.baseline.threat_score)
+        self.assertEqual(validated.threat_level, self.baseline.threat_level)
 
 
 if __name__ == "__main__":

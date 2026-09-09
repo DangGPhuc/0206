@@ -18,7 +18,9 @@ from config import (
     MAX_LOG_ROWS,
     MAX_REPORT_SIZE,
     ANALYSIS_TIMEOUT,
-    ADAPTER_TIMEOUT
+    ADAPTER_TIMEOUT,
+    MAX_STDOUT_BYTES,
+    MAX_STDERR_BYTES
 )
 
 
@@ -36,6 +38,8 @@ class ResourcePolicy:
     max_report_size: int = MAX_REPORT_SIZE
     analysis_timeout: int = ANALYSIS_TIMEOUT
     adapter_timeout: int = ADAPTER_TIMEOUT
+    max_stdout_bytes: int = MAX_STDOUT_BYTES
+    max_stderr_bytes: int = MAX_STDERR_BYTES
 
 
     def check_file_size(self, file_path: Path, max_bytes: int, file_label: str = "File") -> Tuple[bool, Optional[str]]:

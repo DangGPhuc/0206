@@ -37,7 +37,7 @@ class YaraAdapter(AnalyzerAdapter):
         if not self.available():
             return AdapterStatus.NOT_INSTALLED, "YARA is not installed (neither yara-python nor yara CLI found)."
         if not self.rules_path or not self.rules_path.exists():
-            return AdapterStatus.READY, "YARA engine detected, but no rule set provided via --yara-rules. Ruleset status: NOT_ANALYZED."
+            return AdapterStatus.READY, "YARA = AVAILABLE, RULESET = MISSING, ANALYSIS = NOT_ANALYZED (Provide --yara-rules)."
         return AdapterStatus.FUNCTIONAL, f"YARA ready with ruleset: {self.rules_path.name}"
 
     def analyze(
@@ -61,11 +61,16 @@ class YaraAdapter(AnalyzerAdapter):
             return records
 
         if not active_rules or not active_rules.exists():
-            # YARA is installed, but no ruleset was provided -> Explicitly record NOT_ANALYZED
+            # YARA is installed, but no ruleset was provided -> Explicitly record NOT_ANALYZED contract
             rec = store.create(
-                p.name, "YARA", "ruleset_status", "MISSING_RULESET (No --yara-rules provided)",
+                p.name, "YARA", "ruleset_status", "MISSING_RULESET",
                 extractor=self.name, state=EvidenceState.NOT_ANALYZED,
-                provenance={"engine": "yara-python" if self._has_pkg else "yara-cli"}
+                provenance={
+                    "yara": "AVAILABLE",
+                    "ruleset": "MISSING",
+                    "analysis": "NOT_ANALYZED",
+                    "engine": "yara-python" if self._has_pkg else "yara-cli"
+                }
             )
             records.append(rec)
             return records

@@ -129,6 +129,7 @@ class PEStaticAnalyzer:
         artifact_name = self.file_path.name
 
         # Register foundational file evidence
+        self.evidence_store.create(artifact_name, "FILE_METADATA", "filename", artifact_name, "PEStaticAnalyzer")
         self.evidence_store.create(artifact_name, "FILE_METADATA", "sha256", hashes["sha256"], "PEStaticAnalyzer")
         self.evidence_store.create(artifact_name, "FILE_METADATA", "file_size", file_size, "PEStaticAnalyzer")
         self.evidence_store.create(artifact_name, "FILE_METADATA", "overall_entropy", overall_entropy, "PEStaticAnalyzer")
@@ -136,7 +137,7 @@ class PEStaticAnalyzer:
         telemetry: Dict[str, Any] = {
             "file_info": {
                 "file_name": artifact_name,
-                "file_path": str(self.file_path.resolve()),
+                "file_path": artifact_name,
                 "file_size": file_size,
                 "md5": hashes["md5"],
                 "sha1": hashes["sha1"],

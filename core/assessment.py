@@ -141,10 +141,18 @@ class AssessmentEngine:
             ))
 
             if f.mitre_attack_id:
+                f_status = getattr(f, "status", None)
+                status_str = "CONFIRMED" if f_status == FindingStatus.CONFIRMED_BEHAVIOR else (
+                    "OBSERVED" if f_status == FindingStatus.OBSERVED_BEHAVIOR else "NOT_CONFIRMED"
+                )
                 mitre_map[f.mitre_attack_id] = {
+                    "technique": f.mitre_attack_id,
                     "technique_id": f.mitre_attack_id,
                     "technique_name": f.title,
                     "tactic": f.mitre_tactic or "Execution",
+                    "status": status_str,
+                    "confidence": round(f.confidence, 2),
+                    "basis": f.why_it_matters or f.details[:120],
                     "evidence_ids": f.evidence_ids
                 }
 
@@ -160,12 +168,25 @@ class AssessmentEngine:
         else:
             threat_level = "INFORMATIONAL / CLEAN"
 
-        # Structured Classification
+        # Structured Classification (P0.5)
         has_inj = any(f.domain in (AnalysisDomain.PROCESS, AnalysisDomain.MEMORY) for f in findings)
         has_net = any(f.domain in (AnalysisDomain.NETWORK, AnalysisDomain.C2) for f in findings)
         has_pers = any(f.domain in (AnalysisDomain.PERSISTENCE, AnalysisDomain.REGISTRY) for f in findings)
 
-        if has_inj and has_net:
+        rep_records = [e for e in self.evidence_store.all() if e.source_type == "REPUTATION" and e.field == "lookup_status"]
+        has_mal_rep = any(r.value in ("KNOWN_MALICIOUS", "KNOWN_SUSPICIOUS") for r in rep_records)
+
+        if not findings and not has_mal_rep:
+            class_val = "UNKNOWN / NOT_ESTABLISHED"
+            class_status = "NOT_ESTABLISHED"
+            class_conf = 0.0
+            class_basis = ["No suspicious findings or hostile capabilities established"]
+        elif threat_level == "INFORMATIONAL / CLEAN":
+            class_val = "Benign / Low Risk"
+            class_status = "INFERRED"
+            class_conf = 0.85
+            class_basis = ["Triage indicators within normal benign software baseline"]
+        elif has_inj and has_net:
             class_val = "Trojan.Dropper / Injector / C2 Agent"
             class_status = "HEURISTIC"
             class_conf = 0.85
@@ -180,11 +201,21 @@ class AssessmentEngine:
             class_status = "HEURISTIC"
             class_conf = 0.80
             class_basis = ["Registry autostart persistence observed directly"]
-        else:
-            class_val = "Suspicious.PE.Generic"
+        elif threat_score >= 40:
+            class_val = "Suspicious.Heuristic"
+            class_status = "HEURISTIC"
+            class_conf = 0.65
+            class_basis = ["Heuristic anomalies identified without confirmed C2 or persistence"]
+        elif threat_score >= 20:
+            class_val = "Suspicious.LowRisk"
             class_status = "INFERRED"
-            class_conf = 0.60
-            class_basis = ["General PE anomalies without confirmed C2 or persistence"]
+            class_conf = 0.50
+            class_basis = ["Low-severity heuristic indicators identified"]
+        else:
+            class_val = "UNKNOWN / NOT_ESTABLISHED"
+            class_status = "NOT_ESTABLISHED"
+            class_conf = 0.0
+            class_basis = ["No suspicious findings or hostile capabilities established"]
 
         classification_details = Classification(
             value=class_val,
@@ -192,6 +223,18 @@ class AssessmentEngine:
             basis=class_basis,
             status=class_status
         )
+
+        # Advanced Analysis Triggers (P2.18)
+        advanced_triggers = []
+        for f in findings:
+            if "RWX" in f.title or "Entropy" in f.title:
+                advanced_triggers.append("Memory dump / unpacking analysis triggered by high entropy / RWX sections")
+            if "API Hashing" in f.title or "Dynamic API" in f.title:
+                advanced_triggers.append("Interactive disassembler (Ghidra/IDA) triggered by runtime API resolution candidates")
+            if "Injection" in f.title or "Process" in f.title:
+                advanced_triggers.append("Process monitor execution trace triggered by process manipulation capability")
+            if "Beacon" in f.title or "Network" in f.title:
+                advanced_triggers.append("Interactive PCAP / TLS inspection triggered by potential C2 activity")
 
         # Phase 29: Analysis Coverage Calculation across all domains
         coverage_map = self._compute_coverage(findings)
@@ -202,12 +245,39 @@ class AssessmentEngine:
             f"with classification '{class_val}'."
         )
 
-        recommendations = [
-            "Quarantine and sandbox binary in isolated virtual machine before execution.",
-            "Block outbound communication to identified IP/domain endpoints at firewall perimeter.",
-            "Inspect host autostart registry keys and scheduled tasks for persistence artifacts.",
-            "Verify process execution telemetry using Sysmon or EDR sensors."
-        ]
+        # Purpose text conditioned on grounded findings
+        if threat_score == 0 or not findings:
+            purpose_text = "NOT_ESTABLISHED"
+        elif has_inj and has_net:
+            purpose_text = "Host manipulation and remote network interaction."
+        elif has_net:
+            purpose_text = "Remote network communications."
+        elif has_pers:
+            purpose_text = "System persistence / autostart."
+        else:
+            purpose_text = "NOT_ESTABLISHED"
+
+        # Recommendations conditioned on findings/coverage
+        if not findings or threat_score == 0:
+            recommendations = [
+                "No hostile action or containment required based on basic static triage.",
+                "If behavioral suspicion persists, submit sample with execution telemetry (PCAP, Procmon trace) for behavioral analysis.",
+                "Retain case artifacts and companion .sha256 for provenance audit."
+            ]
+        else:
+            recommendations = [
+                "Maintain host safety: avoid live hostile execution on analyst workstation.",
+                "Verify all external threat attribution using verified Evidence IDs.",
+                "Retain analysis manifest and companion .sha256 for case audit integrity."
+            ]
+            if has_pers:
+                recommendations.append("Inspect host autostart locations and remove unauthorized persistence keys.")
+            if has_net:
+                recommendations.append("Block identified external network indicators at perimeter firewalls.")
+            if advanced_triggers:
+                recommendations.extend(advanced_triggers[:3])
+
+        analysis_conf = 1.0 if len(self.evidence_store) > 0 else 0.5
 
         return Assessment(
             assessment_id=f"ASSESS-{threat_score}",
@@ -218,8 +288,8 @@ class AssessmentEngine:
             classification_details=classification_details,
             score_breakdown=score_breakdown,
             summary=summary,
-            key_functionality=f"Capabilities: {'Injection APIs; ' if has_inj else ''}{'Network communications; ' if has_net else ''}{'Persistence Run keys; ' if has_pers else ''}",
-            purpose="Suspicious execution or remote payload deployment.",
+            key_functionality=f"Capabilities: {'Injection APIs; ' if has_inj else ''}{'Network communications; ' if has_net else ''}{'Persistence Run keys; ' if has_pers else ''}" or "No hostile capabilities identified",
+            purpose=purpose_text,
             persistence_assessment="Autostart Run key configured" if has_pers else "None confirmed",
             runtime_confirmation_status="Corroborated by host/network telemetry" if (has_pers or has_net) else "Static capability only; unconfirmed at runtime",
             coverage=coverage_map,
@@ -228,27 +298,89 @@ class AssessmentEngine:
             network_iocs=sorted(list(network_iocs)),
             recommendations=recommendations,
             supporting_finding_ids=supporting_fids,
-            evidence_graph_nodes=len(self.evidence_store)
+            evidence_graph_nodes=len(self.evidence_store),
+            confidence=class_conf,
+            classification_confidence=class_conf,
+            analysis_confidence=analysis_conf
         )
 
-    def _compute_coverage(self, findings: List[Finding]) -> Dict[str, str]:
+    def _compute_coverage(self, findings: List[Finding]) -> Dict[str, Any]:
         """
         Determines the analysis coverage status across all major domains and stages.
+        Standardizes terminology and accurately reflects offline/skipped reputation.
+        Includes coverage reason fields and standardized 4-tier stages.
         """
-        coverage: Dict[str, str] = {}
         active_domains = {f.domain for f in findings}
         evidence_types = {e.source_type for e in self.evidence_store.all()}
+        rep_recs = [e for e in self.evidence_store.all() if e.source_type == "REPUTATION" and e.field == "lookup_status"]
+        if rep_recs:
+            r_val = rep_recs[0].value
+            if r_val in ("SKIPPED_OFFLINE", "NOT_CHECKED", "LOOKUP_FAILED"):
+                rep_cov_status = r_val
+            elif r_val in ("KNOWN_MALICIOUS", "KNOWN_SUSPICIOUS", "LOW_DETECTION", "NOT_FOUND"):
+                rep_cov_status = CoverageStatus.COMPLETED.value
+            else:
+                rep_cov_status = CoverageStatus.NOT_CHECKED.value
+        else:
+            rep_cov_status = CoverageStatus.NOT_ANALYZED.value
 
-        # Core Stages
-        coverage["PE Static"] = CoverageStatus.COMPLETED.value if any("PE" in t for t in evidence_types) else CoverageStatus.NOT_ANALYZED.value
-        coverage["Code Triage"] = CoverageStatus.COMPLETED.value if any("DISASSEMBLY" in t for t in evidence_types) else CoverageStatus.NOT_ANALYZED.value
-        coverage["Reputation"] = CoverageStatus.COMPLETED.value if any("REPUTATION" in t for t in evidence_types) else CoverageStatus.NOT_ANALYZED.value
-        coverage["Network"] = CoverageStatus.COMPLETED.value if any("PCAP" in t for t in evidence_types) else CoverageStatus.NOT_ANALYZED.value
-        coverage["Process"] = CoverageStatus.COMPLETED.value if any("PROCMON" in t for t in evidence_types) else CoverageStatus.NOT_ANALYZED.value
-        coverage["Registry"] = CoverageStatus.COMPLETED.value if any("REG" in t for t in evidence_types) else CoverageStatus.NOT_ANALYZED.value
-        coverage["Memory"] = CoverageStatus.NOT_AVAILABLE.value
-        coverage["Unpacking"] = CoverageStatus.PARTIAL.value if AnalysisDomain.PACKING in active_domains else CoverageStatus.NOT_ANALYZED.value
-        coverage["Anti-Analysis"] = CoverageStatus.PARTIAL.value if AnalysisDomain.ANTI_ANALYSIS in active_domains else CoverageStatus.NOT_ANALYZED.value
-        coverage[".NET"] = CoverageStatus.NOT_APPLICABLE.value
+        has_pe = any("PE" in t for t in evidence_types)
+        has_code = any("DISASSEMBLY" in t for t in evidence_types)
+        has_pcap = any("PCAP" in t for t in evidence_types)
+        has_proc = any("PROCMON" in t for t in evidence_types)
+        has_reg = any("REG" in t for t in evidence_types)
 
+        domain_coverage = {
+            "PE Static": CoverageStatus.COMPLETED.value if has_pe else CoverageStatus.NOT_ANALYZED.value,
+            "Code Triage": CoverageStatus.COMPLETED.value if has_code else CoverageStatus.NOT_ANALYZED.value,
+            "Reputation": rep_cov_status,
+            "Network": CoverageStatus.COMPLETED.value if has_pcap else CoverageStatus.NOT_ANALYZED.value,
+            "Process": CoverageStatus.COMPLETED.value if has_proc else CoverageStatus.NOT_ANALYZED.value,
+            "Registry": CoverageStatus.COMPLETED.value if has_reg else CoverageStatus.NOT_ANALYZED.value,
+            "Memory": CoverageStatus.NOT_AVAILABLE.value,
+            "Unpacking": CoverageStatus.PARTIAL.value if AnalysisDomain.PACKING in active_domains else CoverageStatus.NOT_ANALYZED.value,
+            "Anti-Analysis": CoverageStatus.PARTIAL.value if AnalysisDomain.ANTI_ANALYSIS in active_domains else CoverageStatus.NOT_ANALYZED.value,
+            ".NET": CoverageStatus.NOT_APPLICABLE.value
+        }
+
+        coverage_reasons = {
+            "PE Static": "PE headers, sections, imports, and metadata inspected from sample." if has_pe else "No PE executable structure provided.",
+            "Code Triage": "Capstone linear disassembly triage performed on entry point." if has_code else "No machine code instructions disassembled.",
+            "Reputation": "External hash reputation database queried." if rep_cov_status == CoverageStatus.COMPLETED.value else (
+                "External reputation lookup skipped (offline mode enabled)." if rep_cov_status == "SKIPPED_OFFLINE" else
+                "External reputation lookup skipped (no API key configured or unqueried)."
+            ),
+            "Network": "Network packets ingested and inspected from PCAP artifact." if has_pcap else "No PCAP capture artifact provided for ingestion.",
+            "Process": "Process lifecycle events ingested from Procmon trace." if has_proc else "No Procmon PML/CSV artifact provided for ingestion.",
+            "Registry": "Registry key operations ingested from Procmon/Regshot." if has_reg else "No registry capture artifact provided for ingestion.",
+            "Memory": "Memory acquisition and volatility analysis not engaged in basic triage.",
+            "Unpacking": "Packing heuristics and section entropy analyzed." if AnalysisDomain.PACKING in active_domains else "Dynamic unpacking / payload extraction not engaged in basic triage; requires execution tracing or memory dump analysis.",
+            "Anti-Analysis": "Heuristic evasion and anti-analysis patterns scanned." if AnalysisDomain.ANTI_ANALYSIS in active_domains else "Dedicated anti-analysis and evasion detection not engaged in basic triage profile.",
+            ".NET": "Native Windows PE binary; .NET CLR runtime header not present."
+        }
+
+        stages = {
+            "Basic Static Analysis": {
+                "status": CoverageStatus.COMPLETED.value if has_pe else CoverageStatus.NOT_ANALYZED.value,
+                "reason": "PE headers, sections, exports, imports, and disassembly triage completed."
+            },
+            "Basic Behavioral Analysis": {
+                "status": CoverageStatus.COMPLETED.value if (has_pcap or has_proc or has_reg) else CoverageStatus.NOT_ANALYZED.value,
+                "reason": "Ingested recorded host/network artifacts (safe ingestion; no live execution)." if (has_pcap or has_proc or has_reg) else "No behavioral telemetry artifacts (PCAP, Procmon, Regshot) provided."
+            },
+            "Advanced Static Analysis": {
+                "status": CoverageStatus.NOT_ANALYZED.value,
+                "reason": "Deep interactive disassembly / decompiler analysis (IDA Pro / Ghidra) not invoked."
+            },
+            "Advanced Dynamic Analysis": {
+                "status": CoverageStatus.NOT_ANALYZED.value,
+                "reason": "Live sandbox execution disabled on host; requires isolated VM environment."
+            }
+        }
+
+        # Retain domain keys for backward-compatibility while exposing domain_coverage, coverage_reasons, and stages
+        coverage = dict(domain_coverage)
+        coverage["domain_coverage"] = domain_coverage
+        coverage["coverage_reasons"] = coverage_reasons
+        coverage["stages"] = stages
         return coverage

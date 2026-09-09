@@ -92,6 +92,9 @@ class AnalysisManifest(BaseModel):
     adapter_versions: Dict[str, str] = Field(default_factory=dict)
     adapter_execution_metadata: List[Dict[str, Any]] = Field(default_factory=list)
 
+    # Resource policy bounds applied during this session (Phase 12 & 21)
+    resource_limits: Dict[str, Any] = Field(default_factory=dict)
+
     # Output Lineage & Deliverable Hashes (excludes self-referential manifest hash)
     output_lineage: Dict[str, Dict[str, Any]] = Field(default_factory=dict)
 
@@ -163,7 +166,11 @@ class AnalysisManifest(BaseModel):
 
         output_path = Path(output_path)
         output_path.parent.mkdir(parents=True, exist_ok=True)
-        content = json.dumps(self.model_dump(), indent=2)
+        dumped = self.model_dump()
+        if self.privacy_mode in ("strict", "standard"):
+            from core.privacy import PrivacyRedactor
+            dumped = PrivacyRedactor(mode=self.privacy_mode).redact(dumped)
+        content = json.dumps(dumped, indent=2)
         output_path.write_text(content, encoding="utf-8")
 
         # Generate external companion sha256

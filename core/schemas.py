@@ -11,7 +11,7 @@ Pydantic schemas unifying:
 from enum import Enum
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Union
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ConfigDict
 
 
 # =====================================================================
@@ -95,8 +95,7 @@ class EvidenceRecord(BaseModel):
     fingerprint: str = ""
     duplicate_count: int = 1
 
-    class Config:
-        use_enum_values = True
+    model_config = ConfigDict(use_enum_values=True, populate_by_name=True)
 
 
 # =====================================================================
@@ -138,8 +137,7 @@ class NormalizedEvent(BaseModel):
     attributes: Dict[str, Any] = Field(default_factory=dict)
     provenance: Dict[str, Any] = Field(default_factory=dict)
 
-    class Config:
-        use_enum_values = True
+    model_config = ConfigDict(use_enum_values=True, populate_by_name=True)
 
 
 class ProcessEvent(NormalizedEvent):
@@ -198,6 +196,7 @@ class FindingStatus(str, Enum):
     """Distinguishes static capability from observed or confirmed behavior."""
     CAPABILITY = "CAPABILITY"                      # Static import / potential capability
     OBSERVED_BEHAVIOR = "OBSERVED_BEHAVIOR"        # Directly observed artifact/action
+    INFERRED_BEHAVIOR = "INFERRED_BEHAVIOR"        # Analytically inferred behavior
     CONFIRMED_BEHAVIOR = "CONFIRMED_BEHAVIOR"      # Corroborated across multiple stages/events
 
 
@@ -265,9 +264,20 @@ class Finding(BaseModel):
     def evidence_level(self, val: EvidenceState):
         self.state = val
 
-    class Config:
-        populate_by_name = True
-        use_enum_values = True
+    model_config = ConfigDict(populate_by_name=True, use_enum_values=True)
+
+
+class MitreTechniqueMapping(BaseModel):
+    """Calibrated MITRE ATT&CK technique mapping with explicit confidence and evidence basis."""
+    technique_id: str = Field(alias="technique")
+    technique_name: str = ""
+    tactic: str = ""
+    status: str = "NOT_CONFIRMED"  # CONFIRMED, OBSERVED, NOT_CONFIRMED, CAPABILITY_ONLY, HEURISTIC
+    confidence: float = 0.5
+    basis: str = ""
+    evidence_ids: List[str] = Field(default_factory=list)
+
+    model_config = ConfigDict(populate_by_name=True, use_enum_values=True)
 
 
 # =====================================================================
@@ -300,12 +310,18 @@ class CoverageStatus(str, Enum):
     NOT_ANALYZED = "NOT_ANALYZED"
     NOT_AVAILABLE = "NOT_AVAILABLE"
     NOT_APPLICABLE = "NOT_APPLICABLE"
+    NOT_CHECKED = "NOT_CHECKED"
+    SKIPPED_OFFLINE = "SKIPPED_OFFLINE"
 
 
 class AnalysisCoverage(BaseModel):
     """Tracks completeness across all analytical domains to prevent false impressions of full analysis."""
-    domains: Dict[str, CoverageStatus] = Field(default_factory=dict)
+    domain_coverage: Dict[str, str] = Field(default_factory=dict)
+    coverage_reasons: Dict[str, str] = Field(default_factory=dict)
+    stages: Dict[str, Dict[str, str]] = Field(default_factory=dict)
     summary: str = ""
+
+    model_config = ConfigDict(use_enum_values=True)
 
 
 class Assessment(BaseModel):
@@ -319,20 +335,22 @@ class Assessment(BaseModel):
     score_breakdown: List[ScoreContribution] = Field(default_factory=list)
     summary: str
     key_functionality: str = ""
-    purpose: str = ""
+    purpose: Optional[str] = "NOT_ESTABLISHED"
     persistence_assessment: str = ""
     runtime_confirmation_status: str = ""
-    coverage: Dict[str, str] = Field(default_factory=dict)
+    coverage: Dict[str, Any] = Field(default_factory=dict)
     mitre_techniques: List[Dict[str, Any]] = Field(default_factory=list)
     host_iocs: List[str] = Field(default_factory=list)
     network_iocs: List[str] = Field(default_factory=list)
     recommendations: List[str] = Field(default_factory=list)
     supporting_finding_ids: List[str] = Field(default_factory=list)
     evidence_graph_nodes: int = 0
+    confidence: float = 0.0  # Legacy alias matching classification_confidence
+    classification_confidence: float = 0.0
+    analysis_confidence: float = 1.0
     ai_validation: Optional[Dict[str, Any]] = None
 
-    class Config:
-        use_enum_values = True
+    model_config = ConfigDict(use_enum_values=True, populate_by_name=True)
 
 
 # =====================================================================

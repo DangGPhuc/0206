@@ -24,6 +24,8 @@ MAX_LOG_ROWS = 50_000                 # Maximum rows processed from Procmon CSV
 MAX_REPORT_SIZE = 50 * 1024 * 1024    # 50 MB
 ANALYSIS_TIMEOUT = 300                # 5 minutes default timeout
 ADAPTER_TIMEOUT = 120                 # 2 minutes default adapter timeout
+MAX_STDOUT_BYTES = 5 * 1024 * 1024    # 5 MB maximum external subprocess stdout
+MAX_STDERR_BYTES = 2 * 1024 * 1024    # 2 MB maximum external subprocess stderr
 
 
 # Static Analysis Thresholds

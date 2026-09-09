@@ -3,9 +3,10 @@
 Enforces secure process execution:
 - Strict argument array passing (no shell=True)
 - Timeout bounds (prevent runaway analysis processes)
-- Output size limits (prevent memory exhaustion)
+- Output size limits with temporary-file backing (prevent memory exhaustion)
 - Environment sanitization (prevents leakage of API keys or secrets to sub-processes)
 - Output hashing (SHA256 of stdout/stderr for auditability)
+- Truncation tracking
 """
 import os
 import time
@@ -13,8 +14,10 @@ import hashlib
 import subprocess
 import tempfile
 from pathlib import Path
-from dataclasses import dataclass, field
-from typing import List, Optional, Dict, Any
+from dataclasses import dataclass
+from typing import List, Optional, Dict
+
+from config import MAX_STDOUT_BYTES, MAX_STDERR_BYTES
 
 
 @dataclass
@@ -29,6 +32,7 @@ class ProcessExecutionResult:
     stderr_hash: str
     timed_out: bool = False
     error_message: Optional[str] = None
+    truncated: bool = False
 
 
 # Safe environment variables to propagate to external tools
@@ -58,14 +62,23 @@ def safe_run_process(
     timeout: int = 60,
     cwd: Optional[Path] = None,
     extra_env: Optional[Dict[str, str]] = None,
-    max_output_bytes: int = 5 * 1024 * 1024  # 5 MB max output
+    max_output_bytes: Optional[int] = None,
+    max_stdout_bytes: Optional[int] = None,
+    max_stderr_bytes: Optional[int] = None
 ) -> ProcessExecutionResult:
     """
-    Executes an external binary securely with timeout and output bounds.
-    Never uses shell=True.
+    Executes an external binary securely with timeout and bounded temporary-file I/O.
+    Guarantees:
+    - Never uses shell=True.
+    - Zero unbounded memory buffering: stdout/stderr spool directly to OS temporary files.
+    - Caps output at max_stdout_bytes and max_stderr_bytes with truncation tracking.
     """
     if not cmd_args or not isinstance(cmd_args, (list, tuple)):
         raise ValueError("cmd_args must be a non-empty list of string arguments.")
+
+    # Resolve limits
+    limit_stdout = max_stdout_bytes or max_output_bytes or MAX_STDOUT_BYTES
+    limit_stderr = max_stderr_bytes or (max_output_bytes // 2 if max_output_bytes else MAX_STDERR_BYTES)
 
     # Convert all arguments to strings
     safe_args = [str(arg) for arg in cmd_args]
@@ -73,48 +86,58 @@ def safe_run_process(
 
     work_dir = cwd if (cwd and Path(cwd).exists()) else None
     start_time = time.perf_counter()
+    timed_out = False
+    truncated = False
 
     try:
-        proc = subprocess.run(
-            safe_args,
-            cwd=str(work_dir) if work_dir else None,
-            env=clean_env,
-            capture_output=True,
-            text=True,
-            timeout=timeout,
-            shell=False  # MANDATORY SECURITY REQUIREMENT
-        )
-        duration_ms = round((time.perf_counter() - start_time) * 1000.0, 2)
+        # Use OS file-backed temporary storage to avoid buffering huge output into RAM
+        with tempfile.TemporaryFile(mode="w+b") as out_f, tempfile.TemporaryFile(mode="w+b") as err_f:
+            proc = subprocess.Popen(
+                safe_args,
+                cwd=str(work_dir) if work_dir else None,
+                env=clean_env,
+                stdout=out_f,
+                stderr=err_f,
+                shell=False  # MANDATORY SECURITY REQUIREMENT
+            )
 
-        stdout_text = proc.stdout[:max_output_bytes]
-        stderr_text = proc.stderr[:max_output_bytes]
+            try:
+                proc.wait(timeout=timeout)
+            except subprocess.TimeoutExpired:
+                timed_out = True
+                proc.kill()
+                proc.wait()
 
-        return ProcessExecutionResult(
-            command=safe_args,
-            exit_code=proc.returncode,
-            duration_ms=duration_ms,
-            stdout=stdout_text,
-            stderr=stderr_text,
-            stdout_hash=hashlib.sha256(stdout_text.encode("utf-8", errors="ignore")).hexdigest(),
-            stderr_hash=hashlib.sha256(stderr_text.encode("utf-8", errors="ignore")).hexdigest(),
-            timed_out=False
-        )
+            duration_ms = round((time.perf_counter() - start_time) * 1000.0, 2)
 
-    except subprocess.TimeoutExpired as te:
-        duration_ms = round((time.perf_counter() - start_time) * 1000.0, 2)
-        out = (te.stdout.decode("utf-8", errors="ignore") if isinstance(te.stdout, bytes) else (te.stdout or ""))[:max_output_bytes]
-        err = (te.stderr.decode("utf-8", errors="ignore") if isinstance(te.stderr, bytes) else (te.stderr or ""))[:max_output_bytes]
-        return ProcessExecutionResult(
-            command=safe_args,
-            exit_code=None,
-            duration_ms=duration_ms,
-            stdout=out,
-            stderr=err,
-            stdout_hash=hashlib.sha256(out.encode("utf-8", errors="ignore")).hexdigest(),
-            stderr_hash=hashlib.sha256(err.encode("utf-8", errors="ignore")).hexdigest(),
-            timed_out=True,
-            error_message=f"Process timed out after {timeout} seconds."
-        )
+            # Read stdout up to limit + 1 to detect truncation without loading entire file
+            out_f.seek(0)
+            raw_out = out_f.read(limit_stdout + 1)
+            if len(raw_out) > limit_stdout:
+                truncated = True
+                raw_out = raw_out[:limit_stdout]
+
+            err_f.seek(0)
+            raw_err = err_f.read(limit_stderr + 1)
+            if len(raw_err) > limit_stderr:
+                truncated = True
+                raw_err = raw_err[:limit_stderr]
+
+            stdout_text = raw_out.decode("utf-8", errors="ignore")
+            stderr_text = raw_err.decode("utf-8", errors="ignore")
+
+            return ProcessExecutionResult(
+                command=safe_args,
+                exit_code=proc.returncode if not timed_out else None,
+                duration_ms=duration_ms,
+                stdout=stdout_text,
+                stderr=stderr_text,
+                stdout_hash=hashlib.sha256(raw_out).hexdigest(),
+                stderr_hash=hashlib.sha256(raw_err).hexdigest(),
+                timed_out=timed_out,
+                error_message=f"Process timed out after {timeout} seconds." if timed_out else None,
+                truncated=truncated
+            )
 
     except Exception as ex:
         duration_ms = round((time.perf_counter() - start_time) * 1000.0, 2)
@@ -127,5 +150,32 @@ def safe_run_process(
             stdout_hash=hashlib.sha256(b"").hexdigest(),
             stderr_hash=hashlib.sha256(str(ex).encode("utf-8")).hexdigest(),
             timed_out=False,
-            error_message=str(ex)
+            error_message=str(ex),
+            truncated=False
+        )
+
+
+class SafeProcessGuard:
+    """Wrapper class providing static run method for safe process execution."""
+
+    @staticmethod
+    def run(
+        cmd_args: List[str],
+        timeout_sec: int = 60,
+        cwd: Optional[Path] = None,
+        extra_env: Optional[Dict[str, str]] = None,
+        max_output_bytes: Optional[int] = None,
+        max_stdout_bytes: Optional[int] = None,
+        max_stderr_bytes: Optional[int] = None,
+        timeout: Optional[int] = None
+    ) -> ProcessExecutionResult:
+        actual_timeout = timeout if timeout is not None else timeout_sec
+        return safe_run_process(
+            cmd_args=cmd_args,
+            timeout=actual_timeout,
+            cwd=cwd,
+            extra_env=extra_env,
+            max_output_bytes=max_output_bytes,
+            max_stdout_bytes=max_stdout_bytes,
+            max_stderr_bytes=max_stderr_bytes
         )
