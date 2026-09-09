@@ -1,7 +1,9 @@
 """
 Unit Tests for 0206 AI Grounding & Anti-Hallucination Controls
 """
+import os
 import unittest
+from unittest.mock import patch
 from core.evidence import EvidenceStore
 from core.findings import Finding, FindingCategory, FindingEngine
 from ai.agent import LLMThreatSynthesizer
@@ -26,6 +28,29 @@ class TestAIGrounding(unittest.TestCase):
         self.assertTrue(any("REAL_SHA256_HASH_12345678" in h for h in assessment.host_iocs))
         # Assert that network IOC contains the real domain
         self.assertTrue(any("real-c2.test" in n for n in assessment.network_iocs))
+
+    def test_provider_specific_default_models(self):
+        with patch.dict(
+            os.environ,
+            {
+                "OPENAI_MODEL": "gpt-test-default",
+                "ANTHROPIC_MODEL": "claude-test-default",
+                "OLLAMA_MODEL": "ollama-test-default",
+            },
+            clear=True,
+        ):
+            self.assertEqual(
+                LLMThreatSynthesizer(provider="openai").model,
+                "gpt-test-default",
+            )
+            self.assertEqual(
+                LLMThreatSynthesizer(provider="anthropic").model,
+                "claude-test-default",
+            )
+            self.assertEqual(
+                LLMThreatSynthesizer(provider="ollama").model,
+                "ollama-test-default",
+            )
 
     def test_merge_validation_filters_hallucinated_mitre_evidence(self):
         synthesizer = LLMThreatSynthesizer(provider="offline")

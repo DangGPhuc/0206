@@ -273,14 +273,17 @@ class NetworkAnalyzer(AnalyzerContract):
             )
             beacon_score = round(beacon_score, 4)
 
-            # Phase 15 & 8 Calibrated Terminology
-            has_corroboration = any(
+            # Calibrated terminology: periodicity plus ordinary HTTP/TLS corroboration
+            # is evidence of a likely beacon, not proof of malicious command-and-control.
+            # CONFIRMED_C2 is reserved for stronger semantic/threat-intel/runtime corroboration
+            # elsewhere in the pipeline.
+            has_application_corroboration = any(
                 req.get("dst_ip") == dst_ip or dst_ip in req.get("host", "")
                 for req in http_requests
             )
             if beacon_score >= 0.85:
-                cls = "CONFIRMED_C2" if has_corroboration else "LIKELY_C2_BEACON"
-                ev_state = EvidenceState.OBSERVED if has_corroboration else EvidenceState.INFERRED
+                cls = "LIKELY_C2_BEACON"
+                ev_state = EvidenceState.INFERRED
             elif beacon_score >= 0.60:
                 cls = "SUSPECTED_BEACONING"
                 ev_state = EvidenceState.INFERRED
@@ -308,7 +311,8 @@ class NetworkAnalyzer(AnalyzerContract):
                 "packet_size_similarity_score": round(size_score, 3),
                 "duration_score": round(duration_score, 3),
                 "beacon_score": beacon_score,
-                "classification": cls
+                "classification": cls,
+                "application_corroboration": has_application_corroboration
             }
             beacons.append(candidate)
 

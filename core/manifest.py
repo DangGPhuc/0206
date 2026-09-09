@@ -14,6 +14,8 @@ from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 from pydantic import BaseModel, Field
 
+from core.atomic_io import atomic_write_text
+
 
 def hash_file_streaming(file_path: Path, chunk_size: int = 65536) -> Dict[str, str]:
     """
@@ -88,8 +90,8 @@ class AnalysisManifest(BaseModel):
     ai_metadata: Dict[str, Any] = Field(default_factory=dict)
     privacy_mode: str = "strict"
     profile: str = "standard"
-    sandbox_provider: Optional[str] = "BuiltinSafe"
-    network_mode: Optional[str] = "ISOLATED"
+    sandbox_provider: Optional[str] = "NOT_USED"
+    network_mode: Optional[str] = "UNVERIFIED"
     snapshot_identifier: Optional[str] = None
     configuration_hash: Optional[str] = None
     reputation: Dict[str, Any] = Field(default_factory=dict)
@@ -177,12 +179,12 @@ class AnalysisManifest(BaseModel):
             from core.privacy import PrivacyRedactor
             dumped = PrivacyRedactor(mode=self.privacy_mode).redact(dumped)
         content = json.dumps(dumped, indent=2)
-        output_path.write_text(content, encoding="utf-8")
+        atomic_write_text(output_path, content)
 
-        # Generate external companion sha256
+        # Generate external companion sha256 atomically
         sha256_hash = hashlib.sha256(content.encode("utf-8")).hexdigest()
         sha256_path = output_path.parent / "analysis_manifest.sha256"
-        sha256_path.write_text(f"{sha256_hash}  {output_path.name}\n", encoding="utf-8")
+        atomic_write_text(sha256_path, f"{sha256_hash}  {output_path.name}\n")
         return sha256_path
 
 

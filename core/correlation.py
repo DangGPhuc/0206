@@ -50,32 +50,53 @@ class CorrelationEngine:
 
     def _correlate_process_injection(self, findings: List[Finding]):
         """
-        Correlates static injection API imports with dynamic remote thread/memory manipulation.
+        Correlates a static process-injection capability with explicit remote-memory
+        and remote-execution telemetry. Generic process creation alone is never
+        sufficient to confirm process injection.
         """
-        inj_findings = [f for f in findings if f.domain in (AnalysisDomain.PROCESS, AnalysisDomain.MEMORY) and "Injection" in f.title]
+        inj_findings = [
+            f for f in findings
+            if f.domain in (AnalysisDomain.PROCESS, AnalysisDomain.MEMORY)
+            and "Injection" in f.title
+        ]
         if not inj_findings:
             return
 
-        # Check for dynamic evidence in evidence store (remote thread, memory manipulation, process creation)
-        dynamic_inj_evs = (
-            self.evidence_store.find(field="memory_protection") +
-            self.evidence_store.find(field="remote_thread") +
-            self.evidence_store.find(field="remote_write") +
-            self.evidence_store.find(field="remote_memory_allocation") +
-            self.evidence_store.find(source_type="PROCMON_PROCESS")
-        )
+        remote_alloc_evs = self.evidence_store.find(field="remote_memory_allocation")
+        remote_write_evs = self.evidence_store.find(field="remote_write")
+        remote_thread_evs = self.evidence_store.find(field="remote_thread")
+
+        has_remote_memory_manipulation = bool(remote_alloc_evs or remote_write_evs)
+        has_remote_execution = bool(remote_thread_evs)
+        corroborating_evs = remote_alloc_evs + remote_write_evs + remote_thread_evs
 
         for f in inj_findings:
-            if dynamic_inj_evs:
+            if has_remote_memory_manipulation and has_remote_execution:
                 f.status = FindingStatus.CONFIRMED_BEHAVIOR
                 f.state = EvidenceState.OBSERVED
                 f.confidence = min(0.98, f.confidence + 0.20)
-                f.correlation_rule = "CORR-001: Static Injection APIs Corroborated with Dynamic Process/Memory Event"
-                f.why_it_matters = (
-                    "Static injection API capabilities were corroborated by active runtime process or memory manipulation, "
-                    "confirming remote process injection behavior."
+                f.correlation_rule = (
+                    "CORR-001: Static Injection Capability Corroborated by "
+                    "Remote Memory Manipulation and Remote Execution"
                 )
-                for ev in dynamic_inj_evs:
+                f.why_it_matters = (
+                    "Static injection capability was corroborated by explicit runtime evidence "
+                    "of remote memory manipulation and remote execution."
+                )
+                for ev in corroborating_evs:
+                    if ev.evidence_id not in f.evidence_ids:
+                        f.evidence_ids.append(ev.evidence_id)
+            elif corroborating_evs:
+                # A single remote-injection signal is meaningful, but not enough for confirmation.
+                f.status = FindingStatus.INFERRED_BEHAVIOR
+                f.state = EvidenceState.INFERRED
+                f.confidence = min(0.90, f.confidence + 0.08)
+                f.correlation_rule = "CORR-001-PARTIAL: Partial Runtime Injection Signal"
+                f.why_it_matters = (
+                    "A runtime signal associated with injection was observed, but the evidence "
+                    "does not establish both remote memory manipulation and remote execution."
+                )
+                for ev in corroborating_evs:
                     if ev.evidence_id not in f.evidence_ids:
                         f.evidence_ids.append(ev.evidence_id)
             else:
@@ -118,31 +139,93 @@ class CorrelationEngine:
                 f.correlation_rule = "CORR-005: Statistical Periodic Traffic Observed without Application-Layer C2 Proof"
                 f.why_it_matters = "Statistical periodicity was observed in network flows, but payload semantics are unconfirmed."
 
+    @staticmethod
+    def _registry_path_from_evidence(ev: Any) -> str:
+        """Extracts a comparable registry path from heterogeneous evidence values."""
+        val = getattr(ev, "value", None)
+        if isinstance(val, dict):
+            for key in ("key_path", "path", "registry_key", "key"):
+                if val.get(key):
+                    return str(val[key])
+        return str(val or "")
+
+    @staticmethod
+    def _normalize_registry_path(path: str) -> str:
+        normalized = path.replace("/", "\\").strip().lower()
+        for prefix in (
+            "hkey_current_user\\", "hkcu\\",
+            "hkey_local_machine\\", "hklm\\",
+            "hkey_users\\", "hku\\",
+        ):
+            if normalized.startswith(prefix):
+                normalized = normalized[len(prefix):]
+                break
+        return normalized.rstrip("\\")
+
+    @classmethod
+    def _registry_paths_related(cls, left: str, right: str) -> bool:
+        a = cls._normalize_registry_path(left)
+        b = cls._normalize_registry_path(right)
+        if not a or not b:
+            return False
+        return a == b or a in b or b in a
+
     def _correlate_persistence(self, findings: List[Finding]):
         """
-        Correlates static autostart registry references with dynamic registry writes.
+        Correlates persistence findings only with runtime registry evidence that
+        references the same autostart location. Unrelated registry activity never
+        upgrades a capability to CONFIRMED_BEHAVIOR.
         """
         pers_findings = [
             f for f in findings
             if (f.domain in (AnalysisDomain.PERSISTENCE, AnalysisDomain.REGISTRY) or
                 getattr(f.domain, "value", str(f.domain)) in ("PERSISTENCE", "REGISTRY"))
         ]
-        runtime_reg_evs = (
-            self.evidence_store.find(source_type="REGSHOT_MODIFIED") +
-            self.evidence_store.find(source_type="PROCMON_REG") +
-            self.evidence_store.find(source_type="PROCMON_REGISTRY") +
-            [e for e in self.evidence_store.all() if "reg" in e.source_type.lower() and e.source_type != "STRING"]
-        )
+
+        runtime_reg_evs = []
+        for ev in self.evidence_store.all():
+            source_type = str(getattr(ev, "source_type", ""))
+            field = str(getattr(ev, "field", ""))
+            if (
+                source_type in {"REGSHOT_MODIFIED", "PROCMON_REG", "PROCMON_REGISTRY"}
+                or field in {"registry_persistence", "reg_set_value", "registry_write"}
+            ):
+                runtime_reg_evs.append(ev)
 
         for f in pers_findings:
-            if runtime_reg_evs:
+            finding_evs = [self.evidence_store.get(eid) for eid in f.evidence_ids]
+            finding_evs = [ev for ev in finding_evs if ev is not None]
+            finding_paths = [self._registry_path_from_evidence(ev) for ev in finding_evs]
+
+            # Do not use the same evidence record to corroborate itself.
+            existing_ids = set(f.evidence_ids)
+            matching_runtime = [
+                ev for ev in runtime_reg_evs
+                if ev.evidence_id not in existing_ids
+                and any(
+                    self._registry_paths_related(path, self._registry_path_from_evidence(ev))
+                    for path in finding_paths
+                )
+            ]
+
+            if matching_runtime:
                 f.status = FindingStatus.CONFIRMED_BEHAVIOR
                 f.state = EvidenceState.OBSERVED
                 f.confidence = min(0.95, f.confidence + 0.15)
-                f.correlation_rule = "CORR-004: Autostart Registry Configuration Verified in Host Telemetry"
-                f.why_it_matters = "Host filesystem or registry modification confirms sample persistence across reboots."
-            else:
-                f.status = FindingStatus.CAPABILITY
+                f.correlation_rule = "CORR-006: Matching Autostart Registry Location Verified in Runtime Telemetry"
+                f.why_it_matters = (
+                    "The same autostart registry location identified by the finding was modified "
+                    "in runtime telemetry, providing cross-source corroboration."
+                )
+                for ev in matching_runtime:
+                    if ev.evidence_id not in f.evidence_ids:
+                        f.evidence_ids.append(ev.evidence_id)
+            elif f.status == FindingStatus.CAPABILITY:
+                f.state = EvidenceState.INFERRED
+                f.why_it_matters = (
+                    "A persistence-capable registry location was identified, but no matching "
+                    "runtime modification was observed."
+                )
 
     def _correlate_unpacking_anti_analysis(self, findings: List[Finding]):
         """

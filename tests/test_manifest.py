@@ -26,6 +26,11 @@ class TestAnalysisManifest(unittest.TestCase):
         self.assertEqual(len(hashes["sha256"]), 64)
         self.assertEqual(len(hashes["md5"]), 32)
 
+    def test_manifest_does_not_claim_unverified_sandbox_isolation(self):
+        manifest = AnalysisManifest()
+        self.assertEqual(manifest.sandbox_provider, "NOT_USED")
+        self.assertEqual(manifest.network_mode, "UNVERIFIED")
+
     def test_manifest_creation_and_export(self):
         manifest = AnalysisManifest()
         manifest.record_artifact("sample", self.test_file)
