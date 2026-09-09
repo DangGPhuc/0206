@@ -267,11 +267,13 @@ def display_findings_table(findings: list):
     f_table.add_column("Grounded Evidence", style="dim", width=18)
 
     for f in findings:
-        status_val = getattr(f, "status", getattr(f, "evidence_level", "CAPABILITY"))
+        raw_status = getattr(f, "status", getattr(f, "evidence_level", "CAPABILITY"))
+        status_val = getattr(raw_status, "value", str(raw_status))
         status_str = f"[bold green]{status_val}[/bold green]" if "CONFIRMED" in str(status_val) else f"[cyan]{status_val}[/cyan]"
         eids = ", ".join(f.source_evidence_ids[:3]) + ("..." if len(f.source_evidence_ids) > 3 else "")
-        dom = getattr(f, "domain", getattr(f, "category", "PE"))
-        f_table.add_row(f.finding_id, status_str, str(dom), f.title, eids or "None")
+        raw_dom = getattr(f, "domain", getattr(f, "category", "PE"))
+        dom_val = getattr(raw_dom, "value", str(raw_dom))
+        f_table.add_row(f.finding_id, status_str, dom_val, f.title, eids or "None")
     console.print(f_table)
 
 
@@ -571,7 +573,7 @@ def main():
     p_analyze.add_argument("--portable", action="store_true", help="Portable mode: offline, zero proprietary tools, sanitized local paths")
     p_analyze.add_argument("--yara-rules", type=str, help="Path to custom YARA rules file (.yar/.yara)")
     p_analyze.add_argument("--backend", type=str, choices=["memory", "sqlite"], default="memory", help="Evidence Store backend storage")
-    p_analyze.add_argument("--api-key", type=str, help="API key for remote LLM provider")
+    p_analyze.add_argument("--api-key", type=str, help="[DEPRECATED] API key for remote LLM provider. Prefer OPENAI_API_KEY / ANTHROPIC_API_KEY env vars.")
     p_analyze.add_argument("--model", type=str, default="gpt-4o", help="LLM model name")
     p_analyze.add_argument("--export-raw-evidence", action="store_true", help="Export unredacted raw internal evidence to evidence.raw.json")
     p_analyze.add_argument("--quiet", "-q", action="store_true", help="Quiet output (suppress banner, progress bars, non-critical logs)")
@@ -619,7 +621,7 @@ def main():
     parser.add_argument("--portable", action="store_true", help="Portable mode: offline, zero proprietary tools, sanitized local paths")
     parser.add_argument("--yara-rules", type=str, help="Path to custom YARA rules file (.yar/.yara)")
     parser.add_argument("--backend", type=str, choices=["memory", "sqlite"], default="memory", help="Evidence Store backend storage")
-    parser.add_argument("--api-key", type=str, help="API key for remote LLM provider")
+    parser.add_argument("--api-key", type=str, help="[DEPRECATED] API key for remote LLM provider. Prefer OPENAI_API_KEY / ANTHROPIC_API_KEY env vars.")
     parser.add_argument("--model", type=str, default="gpt-4o")
     parser.add_argument("--export-raw-evidence", action="store_true", help="Export unredacted raw internal evidence to evidence.raw.json")
     parser.add_argument("--quiet", "-q", action="store_true", help="Quiet output")
@@ -631,6 +633,16 @@ def main():
     is_quiet_or_json = getattr(args, "quiet", False) or getattr(args, "json", False)
     if not is_quiet_or_json:
         print_banner()
+
+    if getattr(args, "api_key", None):
+        import warnings
+        warnings.warn(
+            "Passing secrets through CLI arguments may expose them through shell history or process inspection. Prefer environment variables (OPENAI_API_KEY, ANTHROPIC_API_KEY).",
+            DeprecationWarning,
+            stacklevel=2
+        )
+        if not is_quiet_or_json:
+            console.print("[yellow][!] Warning: Passing secrets through CLI arguments may expose them through shell history or process inspection. Prefer environment variables (OPENAI_API_KEY, ANTHROPIC_API_KEY).[/yellow]")
 
     if getattr(args, "no_color", False):
         console.no_color = True

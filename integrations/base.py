@@ -19,6 +19,10 @@ from pydantic import BaseModel, Field, ConfigDict
 from core.evidence import EvidenceStore, EvidenceRecord, EvidenceState
 
 
+import hashlib
+import uuid
+
+
 class AdapterStatus(str, Enum):
     NOT_INSTALLED = "NOT_INSTALLED"
     DETECTED = "DETECTED"
@@ -28,6 +32,35 @@ class AdapterStatus(str, Enum):
     TIMEOUT = "TIMEOUT"
     NOT_SUPPORTED = "NOT_SUPPORTED"
     CAPABILITY_DETECTION_ONLY = "CAPABILITY_DETECTION_ONLY"
+
+
+class GeneratedArtifact(BaseModel):
+    """External artifact provenance metadata."""
+    artifact_id: str
+    path: str
+    sha256: str
+    size: int
+    source_tool: str
+    tool_version: Optional[str] = None
+    created_at: str
+
+    model_config = ConfigDict(use_enum_values=True)
+
+    @classmethod
+    def from_file(cls, path: Path, source_tool: str, tool_version: Optional[str] = None) -> "GeneratedArtifact":
+        p = Path(path)
+        content = p.read_bytes() if p.exists() else b""
+        sha256 = hashlib.sha256(content).hexdigest()
+        size = len(content)
+        return cls(
+            artifact_id=f"art-{uuid.uuid4().hex[:12]}",
+            path=str(p.resolve()),
+            sha256=sha256,
+            size=size,
+            source_tool=source_tool,
+            tool_version=tool_version,
+            created_at=datetime.now(timezone.utc).isoformat()
+        )
 
 
 class AdapterResult(BaseModel):
@@ -41,10 +74,18 @@ class AdapterResult(BaseModel):
     version: Optional[str] = None
     evidence_ids: List[str] = Field(default_factory=list)
     artifact_paths: List[str] = Field(default_factory=list)
+    artifacts: List[GeneratedArtifact] = Field(default_factory=list)
     stdout_hash: Optional[str] = None
     stderr_hash: Optional[str] = None
     warnings: List[str] = Field(default_factory=list)
     errors: List[str] = Field(default_factory=list)
+
+    def record_generated_artifact(self, path: Path) -> GeneratedArtifact:
+        art = GeneratedArtifact.from_file(path, source_tool=self.adapter_name, tool_version=self.version)
+        self.artifacts.append(art)
+        if art.path not in self.artifact_paths:
+            self.artifact_paths.append(art.path)
+        return art
 
     @property
     def finished_at(self) -> str:

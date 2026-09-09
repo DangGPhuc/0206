@@ -30,11 +30,14 @@ dependencies = [
     "python-docx>=1.0.0",
     "pydantic>=2.0.0",
     "rich>=13.0.0",
-    "openai>=1.0.0",
     "cryptography>=41.0.0"
 ]
 
 [project.optional-dependencies]
+ai = [
+    "openai>=1.0.0",
+    "anthropic>=0.18.0"
+]
 yara = [
     "yara-python>=4.3.0"
 ]
@@ -42,6 +45,12 @@ capa = [
     "flare-capa>=7.0.0"
 ]
 all-open-source = [
+    "yara-python>=4.3.0",
+    "flare-capa>=7.0.0"
+]
+all = [
+    "openai>=1.0.0",
+    "anthropic>=0.18.0",
     "yara-python>=4.3.0",
     "flare-capa>=7.0.0"
 ]

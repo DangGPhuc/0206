@@ -34,28 +34,29 @@ class ExternalSandboxBackend(SandboxBackend):
         return bool(self.api_endpoint)
 
     def prepare(self) -> SandboxActionRecord:
-        status = "SUCCESS" if self.is_available() else "SKIPPED"
+        status = "SCAFFOLD" if self.is_available() else "NOT_CONFIGURED"
         rec = SandboxActionRecord(action="PREPARE", status=status, details=f"External endpoint: {self.api_endpoint or 'NOT_CONFIGURED'}")
         self.actions.append(rec)
         return rec
 
     def snapshot(self, snapshot_name: Optional[str] = None) -> SandboxActionRecord:
-        rec = SandboxActionRecord(action="SNAPSHOT", status="SKIPPED", details="External backend manages remote VM snapshots.")
+        status = "SCAFFOLD" if self.is_available() else "NOT_CONFIGURED"
+        rec = SandboxActionRecord(action="SNAPSHOT", status=status, details="External backend remote VM snapshot management scaffolded.")
         self.actions.append(rec)
         return rec
 
     def execute(self, sample_path: str, arguments: Optional[List[str]] = None) -> SandboxActionRecord:
         if not self.is_available():
-            rec = SandboxActionRecord(action="EXECUTE", status="SKIPPED", details="No external sandbox endpoint configured.")
+            rec = SandboxActionRecord(action="EXECUTE", status="NOT_CONFIGURED", details="No external sandbox endpoint configured.")
             self.actions.append(rec)
             return rec
-        rec = SandboxActionRecord(action="EXECUTE", status="SUCCESS", details=f"Dispatched sample to {self.api_endpoint}.")
+        rec = SandboxActionRecord(action="EXECUTE", status="NOT_IMPLEMENTED", details=f"Dispatch to {self.api_endpoint} is currently scaffolded. Live submission blocked.")
         self.actions.append(rec)
         return rec
 
     def monitor(self, duration_seconds: Optional[int] = None) -> SandboxActionRecord:
-        status = "SUCCESS" if self.is_available() else "SKIPPED"
-        rec = SandboxActionRecord(action="MONITOR", status=status, details="Remote execution monitor.")
+        status = "SCAFFOLD" if self.is_available() else "NOT_CONFIGURED"
+        rec = SandboxActionRecord(action="MONITOR", status=status, details="Remote execution monitor scaffolded.")
         self.actions.append(rec)
         return rec
 
@@ -63,7 +64,7 @@ class ExternalSandboxBackend(SandboxBackend):
         return SandboxExecutionTrace(
             trace_id=self._trace_id,
             backend_name=self.name,
-            status=SandboxStatus.COMPLETED if self.is_available() else SandboxStatus.NOT_AVAILABLE,
+            status=SandboxStatus.SCAFFOLD if self.is_available() else SandboxStatus.NOT_CONFIGURED,
             finished_at=datetime.now(timezone.utc).isoformat(),
             actions=list(self.actions),
             dropped_files=[],
@@ -72,16 +73,18 @@ class ExternalSandboxBackend(SandboxBackend):
         )
 
     def stop(self) -> SandboxActionRecord:
-        rec = SandboxActionRecord(action="STOP", status="SKIPPED", details="Remote job termination handled by external service.")
+        status = "SCAFFOLD" if self.is_available() else "NOT_CONFIGURED"
+        rec = SandboxActionRecord(action="STOP", status=status, details="Remote job termination scaffolded.")
         self.actions.append(rec)
         return rec
 
     def revert(self, snapshot_name: Optional[str] = None) -> SandboxActionRecord:
-        rec = SandboxActionRecord(action="REVERT", status="SKIPPED", details="Remote snapshot restoration handled by external service.")
+        status = "SCAFFOLD" if self.is_available() else "NOT_CONFIGURED"
+        rec = SandboxActionRecord(action="REVERT", status=status, details="Remote snapshot restoration scaffolded.")
         self.actions.append(rec)
         return rec
 
     def cleanup(self) -> SandboxActionRecord:
-        rec = SandboxActionRecord(action="CLEANUP", status="SUCCESS", details="External session resources released.")
+        rec = SandboxActionRecord(action="CLEANUP", status="SCAFFOLD", details="External session resource cleanup scaffolded.")
         self.actions.append(rec)
         return rec

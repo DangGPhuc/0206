@@ -8,7 +8,7 @@ import csv
 from pathlib import Path
 from scapy.all import Ether, IP, UDP, TCP, DNS, DNSQR, DNSRR, Raw, wrpcap
 
-from analyzer.api_hash_db import hash_djb2, hash_ror13, hash_crc32, hash_fnv1a
+from analyzers.static.api_hashing import hash_djb2, hash_ror13, hash_crc32, hash_fnv1a
 
 TESTS_DIR = Path(__file__).resolve().parent
 

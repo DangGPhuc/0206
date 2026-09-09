@@ -29,11 +29,11 @@ class CodeAnalyzer:
 
     def __init__(self, file_path: Path, evidence_store: Optional[EvidenceStore] = None, max_instructions: int = 150):
         self.file_path = Path(file_path)
-        self.evidence_store = evidence_store or EvidenceStore()
+        self.evidence_store = evidence_store if evidence_store is not None else EvidenceStore()
         self.max_instructions = max_instructions
         self.errors: List[str] = []
 
-    def analyze(self) -> Dict[str, Any]:
+    def analyze(self, max_instructions: Optional[int] = None) -> Dict[str, Any]:
         """Runs entry-point disassembly and heuristic pattern detection."""
         if not self.file_path.exists():
             return {"status": "ERROR", "message": f"File not found: {self.file_path}"}
@@ -85,6 +85,7 @@ class CodeAnalyzer:
             suspicious_patterns = []
             invalid_count = 0
             call_targets = []
+            effective_limit = max_instructions if max_instructions is not None else self.max_instructions
 
             for insn in md.disasm(code_bytes, entry_va):
                 addr_hex = hex(insn.address)
@@ -132,7 +133,7 @@ class CodeAnalyzer:
                 if mnemonic == "call":
                     call_targets.append(op_str)
 
-                if len(instructions) >= self.max_instructions:
+                if len(instructions) >= effective_limit:
                     break
 
             # Record entry point disassembly triage evidence
@@ -148,7 +149,8 @@ class CodeAnalyzer:
             disasm_lines = [f"{i['address']}: {i['mnemonic']} {i['op_str']}" for i in instructions]
 
             return {
-                "status": "COMPLETED",
+                "status": "OBSERVED",
+                "triage_type": "STATIC CODE TRIAGE",
                 "architecture": arch_str,
                 "entry_va": hex(entry_va),
                 "instruction_count": len(instructions),

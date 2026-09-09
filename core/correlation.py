@@ -114,7 +114,7 @@ class CorrelationEngine:
                 f.why_it_matters = "Statistical interval stability observed; payload intent remains unconfirmed."
             elif "OBSERVED_PERIODIC_TRAFFIC" in title_upper or "BEACONING" in title_upper or "PERIODIC" in title_upper:
                 f.status = FindingStatus.OBSERVED_BEHAVIOR
-                f.state = EvidenceState.HEURISTIC
+                f.state = EvidenceState.INFERRED
                 f.correlation_rule = "CORR-005: Statistical Periodic Traffic Observed without Application-Layer C2 Proof"
                 f.why_it_matters = "Statistical periodicity was observed in network flows, but payload semantics are unconfirmed."
 

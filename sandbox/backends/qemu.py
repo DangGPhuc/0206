@@ -36,31 +36,31 @@ class QemuSandboxBackend(SandboxBackend):
 
     def prepare(self) -> SandboxActionRecord:
         if not self.is_available():
-            rec = SandboxActionRecord(action="PREPARE", status="SKIPPED", details="QEMU binary not detected in PATH.")
+            rec = SandboxActionRecord(action="PREPARE", status="NOT_CONFIGURED", details="QEMU binary not detected in PATH.")
             self.actions.append(rec)
             return rec
-        rec = SandboxActionRecord(action="PREPARE", status="SUCCESS", details=f"Verified hypervisor {self.qemu_bin}.")
+        rec = SandboxActionRecord(action="PREPARE", status="SCAFFOLD", details=f"Verified hypervisor {self.qemu_bin}. VM orchestration pipeline is SCAFFOLD.")
         self.actions.append(rec)
         return rec
 
     def snapshot(self, snapshot_name: Optional[str] = None) -> SandboxActionRecord:
         snap = snapshot_name or self.config.snapshot_name
-        rec = SandboxActionRecord(action="SNAPSHOT", status="SUCCESS" if self.is_available() else "SKIPPED", details=f"Referenced snapshot {snap}")
+        rec = SandboxActionRecord(action="SNAPSHOT", status="SCAFFOLD" if self.is_available() else "NOT_CONFIGURED", details=f"Referenced snapshot {snap} (automation scaffolded).")
         self.actions.append(rec)
         return rec
 
     def execute(self, sample_path: str, arguments: Optional[List[str]] = None) -> SandboxActionRecord:
         if not self.is_available():
-            rec = SandboxActionRecord(action="EXECUTE", status="SKIPPED", details="QEMU guest not configured.")
+            rec = SandboxActionRecord(action="EXECUTE", status="NOT_CONFIGURED", details="QEMU guest not configured.")
             self.actions.append(rec)
             return rec
-        rec = SandboxActionRecord(action="EXECUTE", status="SUCCESS", details=f"Executed {sample_path} via guest agent.")
+        rec = SandboxActionRecord(action="EXECUTE", status="NOT_IMPLEMENTED", details=f"Guest agent execution for {sample_path} not implemented (scaffold). Live execution disabled.")
         self.actions.append(rec)
         return rec
 
     def monitor(self, duration_seconds: Optional[int] = None) -> SandboxActionRecord:
         dur = duration_seconds or self.config.execution_timeout_seconds
-        rec = SandboxActionRecord(action="MONITOR", status="SUCCESS" if self.is_available() else "SKIPPED", details=f"Telemetry capture duration: {dur}s.")
+        rec = SandboxActionRecord(action="MONITOR", status="SCAFFOLD" if self.is_available() else "NOT_CONFIGURED", details=f"Telemetry capture pipeline scaffolded ({dur}s).")
         self.actions.append(rec)
         return rec
 
@@ -68,7 +68,7 @@ class QemuSandboxBackend(SandboxBackend):
         return SandboxExecutionTrace(
             trace_id=self._trace_id,
             backend_name=self.name,
-            status=SandboxStatus.COMPLETED if self.is_available() else SandboxStatus.NOT_AVAILABLE,
+            status=SandboxStatus.SCAFFOLD if self.is_available() else SandboxStatus.NOT_CONFIGURED,
             finished_at=datetime.now(timezone.utc).isoformat(),
             actions=list(self.actions),
             dropped_files=[],
@@ -77,17 +77,17 @@ class QemuSandboxBackend(SandboxBackend):
         )
 
     def stop(self) -> SandboxActionRecord:
-        rec = SandboxActionRecord(action="STOP", status="SUCCESS" if self.is_available() else "SKIPPED", details="VM halted.")
+        rec = SandboxActionRecord(action="STOP", status="SCAFFOLD" if self.is_available() else "NOT_CONFIGURED", details="VM halt automation scaffolded.")
         self.actions.append(rec)
         return rec
 
     def revert(self, snapshot_name: Optional[str] = None) -> SandboxActionRecord:
         snap = snapshot_name or self.config.snapshot_name
-        rec = SandboxActionRecord(action="REVERT", status="SUCCESS" if self.is_available() else "SKIPPED", details=f"Reverted to snapshot {snap}.")
+        rec = SandboxActionRecord(action="REVERT", status="SCAFFOLD" if self.is_available() else "NOT_CONFIGURED", details=f"Snapshot revert scaffolded ({snap}).")
         self.actions.append(rec)
         return rec
 
     def cleanup(self) -> SandboxActionRecord:
-        rec = SandboxActionRecord(action="CLEANUP", status="SUCCESS", details="Cleaned QEMU local sockets.")
+        rec = SandboxActionRecord(action="CLEANUP", status="SCAFFOLD", details="Local socket cleanup scaffolded.")
         self.actions.append(rec)
         return rec

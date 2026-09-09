@@ -42,30 +42,70 @@ class AdvancedReportBuilder:
             "details": "Section anomalies and PE header validation." if sec_anom else "[NOT_ANALYZED] No section anomalies or advanced loader artifacts extracted."
         }
 
-        # 8. Assembly & Code Analysis (Capstone triage / disassemblers)
-        disasm_records = evidence_store.find(source_type="DISASSEMBLY")
-        if disasm_records:
-            instr_lines = []
-            for r in disasm_records:
-                instr_lines.append(f"{r.source_offset or '0x00'}: {r.value}")
+        # 8. Assembly & Code Analysis (Static Code Triage vs Advanced Reverse Engineering)
+        rich_disasm = [
+            r for r in evidence_store.all()
+            if r.source_type in ("DECOMPILATION", "FUNCTION_ANALYSIS", "CONTROL_FLOW_GRAPH", "IDA_PRO", "GHIDRA", "RADARE2")
+            or r.field in ("decompilation", "functions", "control_flow_graph", "cross_references")
+        ]
+        triage_disasm = evidence_store.find(source_type="DISASSEMBLY")
+
+        if rich_disasm:
             data["assembly_code"] = {
                 "status": "COMPLETED",
-                "instruction_count": len(disasm_records),
+                "tier": "ADVANCED_ASSEMBLY",
+                "instruction_count": len(rich_disasm),
+                "details": f"Advanced reverse engineering artifacts extracted ({len(rich_disasm)} records).",
+            }
+        elif triage_disasm:
+            instr_lines = []
+            for r in triage_disasm:
+                instr_lines.append(f"{r.source_offset or '0x00'}: {r.value}")
+            data["assembly_code"] = {
+                "status": "PARTIAL",
+                "tier": "STATIC_CODE_TRIAGE",
+                "instruction_count": len(triage_disasm),
                 "instructions_preview": instr_lines[:25],
+                "details": "Basic entry-point code triage completed via Capstone; interactive decompiler / full CFG analysis not executed.",
             }
         else:
             data["assembly_code"] = {
                 "status": "NOT_ANALYZED",
+                "tier": "NOT_ANALYZED",
                 "details": "[NOT_ANALYZED] Disassembly engine not executed for this sample."
             }
 
-        # 9. API & Control Flow Analysis
-        dyn_api = [r for r in evidence_store.all() if "api" in r.field.lower()]
-        if dyn_api:
+        # 9. API & Control Flow Analysis (Distinguish Static Imports/Hashes from Dynamic/Control Flow)
+        static_imports = [r for r in evidence_store.all() if r.source_type == "PE_IMPORT" or r.field.startswith("imported_api")]
+        api_hashes = [r for r in evidence_store.all() if r.field == "api_hash_match" or r.source_type in ("API_HASH", "API_HASH_CONSTANT")]
+        api_refs = [r for r in evidence_store.all() if r.field == "api_reference" or r.source_type == "API_REFERENCE"]
+        dyn_api_calls = [r for r in evidence_store.all() if r.source_type in ("DYNAMIC_API", "API_CALL", "PROCMON_API") or r.field in ("dynamic_api_call", "api_call")]
+        api_resolutions = [r for r in evidence_store.all() if r.source_type == "API_RESOLUTION" or r.field in ("resolved_api", "dynamic_resolution")]
+        xrefs = [r for r in evidence_store.all() if r.source_type == "XREF" or r.field == "xref"]
+        control_flow = [r for r in evidence_store.all() if r.source_type in ("CONTROL_FLOW", "CFG") or r.field in ("control_flow", "branch_target")]
+
+        advanced_api_records = dyn_api_calls + api_resolutions + xrefs + control_flow
+        all_api_records = static_imports + api_hashes + api_refs + advanced_api_records
+
+        if advanced_api_records:
             data["api_control_flow"] = {
                 "status": "COMPLETED",
-                "count": len(dyn_api),
-                "items": [r.value for r in dyn_api[:15]]
+                "count": len(advanced_api_records),
+                "dynamic_api_calls_count": len(dyn_api_calls),
+                "api_resolutions_count": len(api_resolutions),
+                "xrefs_count": len(xrefs),
+                "control_flow_count": len(control_flow),
+                "items": [r.value for r in advanced_api_records[:15]],
+                "details": f"Captured {len(advanced_api_records)} advanced runtime API resolution and control-flow artifacts."
+            }
+        elif all_api_records:
+            data["api_control_flow"] = {
+                "status": "PARTIAL",
+                "count": len(all_api_records),
+                "static_imports_count": len(static_imports),
+                "api_hashes_count": len(api_hashes),
+                "items": [r.value for r in all_api_records[:15]],
+                "details": "Static API imports and precomputed API hash constants identified; dynamic runtime API calls and control-flow cross-references not captured or analyzed."
             }
         else:
             data["api_control_flow"] = {
@@ -73,13 +113,14 @@ class AdvancedReportBuilder:
                 "details": "[NOT_ANALYZED] No dynamic API resolution or control flow cross-references detected."
             }
 
-        # 10. Advanced Dynamic Analysis
-        dyn_events = evidence_store.find(domain="DYNAMIC") + [r for r in evidence_store.all() if r.source_type in ("SANDBOX", "DYNAMIC_TRACE")]
+        # 10. Advanced Dynamic Analysis (Stage-aware query, no invalid DYNAMIC domain)
+        dyn_source_types = ("SANDBOX", "DYNAMIC_TRACE", "ETW", "PROCMON", "PCAP", "PROCMON_PROCESS", "PROCMON_FILE", "PROCMON_REG", "PROCMON_REGISTRY")
+        dyn_events = [r for r in evidence_store.all() if r.source_type in dyn_source_types]
         if dyn_events:
             data["advanced_dynamic"] = {
                 "status": "COMPLETED",
                 "event_count": len(dyn_events),
-                "details": f"Captured {len(dyn_events)} dynamic execution traces."
+                "details": f"Captured {len(dyn_events)} dynamic execution traces from {', '.join(sorted({r.source_type for r in dyn_events}))}."
             }
         else:
             data["advanced_dynamic"] = {

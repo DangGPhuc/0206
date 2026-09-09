@@ -35,24 +35,41 @@ class ProcessExecutionResult:
     truncated: bool = False
 
 
-# Safe environment variables to propagate to external tools
+# Safe environment variables to propagate to external tools (excluding sensitive analyst identity)
 SAFE_ENV_VARS = {
     "PATH", "SYSTEMROOT", "WINDIR", "TMP", "TEMP", "TMPDIR",
-    "LANG", "LC_ALL", "HOME", "USER", "SHELL", "TERM"
+    "LANG", "LC_ALL", "SHELL", "TERM"
 }
 
+BLOCKED_ENV_SUBSTRINGS = (
+    "key", "secret", "token", "password", "auth", "credential", "private", "api"
+)
 
-def sanitize_environment(extra_env: Optional[Dict[str, str]] = None) -> Dict[str, str]:
+
+def sanitize_environment(
+    extra_env: Optional[Dict[str, str]] = None,
+    isolate_home: bool = True
+) -> Dict[str, str]:
     """
-    Constructs a sterile environment dictionary, stripping API keys and secrets.
+    Constructs a sterile environment dictionary, stripping API keys, secrets,
+    and avoiding propagation of real analyst HOME and USER.
     """
     clean_env: Dict[str, str] = {}
     for k in SAFE_ENV_VARS:
         if k in os.environ:
             clean_env[k] = os.environ[k]
+
+    # Provide a controlled temporary directory for HOME and generic USER
+    if isolate_home:
+        controlled_home = os.environ.get("TMPDIR") or os.environ.get("TEMP") or tempfile.gettempdir()
+        clean_env["HOME"] = controlled_home
+        clean_env["USER"] = "analyst"
+        clean_env["LOGNAME"] = "analyst"
+
     if extra_env:
         for k, v in extra_env.items():
-            if not any(secret_term in k.lower() for secret_term in ("key", "secret", "token", "password", "auth")):
+            k_lower = k.lower()
+            if not any(secret_term in k_lower for secret_term in BLOCKED_ENV_SUBSTRINGS):
                 clean_env[k] = v
     return clean_env
 

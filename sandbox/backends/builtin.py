@@ -39,7 +39,7 @@ class BuiltinSandboxBackend(SandboxBackend):
         self._is_prepared = True
         record = SandboxActionRecord(
             action="PREPARE",
-            status="SUCCESS",
+            status="SAFE_DRY_RUN",
             details="Initialized safe builtin execution environment (host execution disabled).",
         )
         self.actions.append(record)
@@ -49,7 +49,7 @@ class BuiltinSandboxBackend(SandboxBackend):
         snap = snapshot_name or self.config.snapshot_name
         record = SandboxActionRecord(
             action="SNAPSHOT",
-            status="SUCCESS",
+            status="SAFE_DRY_RUN",
             details=f"Virtual snapshot checkpoint referenced: {snap}",
         )
         self.actions.append(record)
@@ -60,7 +60,7 @@ class BuiltinSandboxBackend(SandboxBackend):
         self._is_running = True
         record = SandboxActionRecord(
             action="EXECUTE",
-            status="SUCCESS",
+            status="SAFE_DRY_RUN",
             details=f"Safe sandbox dry-run registered for {sample_path}. Host execution blocked by security policy.",
         )
         self.actions.append(record)
@@ -70,7 +70,7 @@ class BuiltinSandboxBackend(SandboxBackend):
         dur = duration_seconds or self.config.execution_timeout_seconds
         record = SandboxActionRecord(
             action="MONITOR",
-            status="SUCCESS",
+            status="SAFE_DRY_RUN",
             details=f"Monitored simulated execution window ({dur}s).",
         )
         self.actions.append(record)
@@ -80,7 +80,7 @@ class BuiltinSandboxBackend(SandboxBackend):
         trace = SandboxExecutionTrace(
             trace_id=self._trace_id,
             backend_name=self.name,
-            status=SandboxStatus.COMPLETED,
+            status=SandboxStatus.SAFE_DRY_RUN,
             finished_at=datetime.now(timezone.utc).isoformat(),
             actions=list(self.actions),
             dropped_files=[],
@@ -93,7 +93,7 @@ class BuiltinSandboxBackend(SandboxBackend):
         self._is_running = False
         record = SandboxActionRecord(
             action="STOP",
-            status="SUCCESS",
+            status="SAFE_DRY_RUN",
             details="Halted safe execution monitor.",
         )
         self.actions.append(record)
@@ -103,7 +103,7 @@ class BuiltinSandboxBackend(SandboxBackend):
         snap = snapshot_name or self.config.snapshot_name
         record = SandboxActionRecord(
             action="REVERT",
-            status="SUCCESS",
+            status="SAFE_DRY_RUN",
             details=f"Reverted to clean baseline: {snap}",
         )
         self.actions.append(record)
@@ -113,7 +113,7 @@ class BuiltinSandboxBackend(SandboxBackend):
         self._is_prepared = False
         record = SandboxActionRecord(
             action="CLEANUP",
-            status="SUCCESS",
+            status="SAFE_DRY_RUN",
             details="Cleaned up safe execution resources.",
         )
         self.actions.append(record)

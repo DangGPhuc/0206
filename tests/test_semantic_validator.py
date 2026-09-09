@@ -30,6 +30,14 @@ class TestSemanticValidator(unittest.TestCase):
 
     def setUp(self):
         self.fixture_exe = Path(__file__).resolve().parent / "sample_benign_triage.exe"
+        if not self.fixture_exe.exists():
+            try:
+                from tests.generate_test_artifacts import main as gen_main
+                gen_main()
+            except Exception:
+                pass
+        if not self.fixture_exe.exists():
+            self.skipTest("sample_benign_triage.exe fixture missing")
         self.validator = CaseSemanticValidator()
 
     def test_benign_e2e_case_passes_validation(self):

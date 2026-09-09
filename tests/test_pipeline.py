@@ -67,6 +67,8 @@ class Test0206Pipeline(unittest.TestCase):
 
     def test_04_docx_report_generation(self):
         """Verify generic report generator and optional SANS-style adapter."""
+        if not self.sample_pe.exists() or not self.sample_pcap.exists() or not self.sample_procmon.exists():
+            self.skipTest("Sample fixtures not generated.")
         static_data = PEStaticAnalyzer(self.sample_pe).analyze()
         beh_data = BehavioralAnalyzer(self.sample_pcap, self.sample_procmon).analyze()
         ai_data = LLMThreatSynthesizer(provider="offline").synthesize({"static": static_data, "behavioral": beh_data})

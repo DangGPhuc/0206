@@ -11,7 +11,7 @@ Authoritative scoring layer implementing:
 from typing import List, Dict, Any, Optional
 from core.schemas import (
     AnalysisDomain, EvidenceState, Finding, FindingStatus, FindingSeverity,
-    Classification, ScoreContribution, CoverageStatus, Assessment
+    Classification, RecommendationRecord, ScoreContribution, CoverageStatus, Assessment
 )
 from core.evidence import EvidenceStore
 
@@ -259,23 +259,53 @@ class AssessmentEngine:
 
         # Recommendations conditioned on findings/coverage
         if not findings or threat_score == 0:
-            recommendations = [
-                "No hostile action or containment required based on basic static triage.",
-                "If behavioral suspicion persists, submit sample with execution telemetry (PCAP, Procmon trace) for behavioral analysis.",
-                "Retain case artifacts and companion .sha256 for provenance audit."
+            rec_records = [
+                RecommendationRecord(
+                    action="Retain case artifacts and cryptographic manifest for audit trail",
+                    reason="No hostile indicators or suspicious capabilities established from basic static triage.",
+                    priority="LOW",
+                    trigger_finding_ids=[]
+                ),
+                RecommendationRecord(
+                    action="Submit execution telemetry for dynamic evaluation if suspicion persists",
+                    reason="Absence of static indicators does not preclude dormant or environment-keyed payloads.",
+                    priority="LOW",
+                    trigger_finding_ids=[]
+                )
             ]
+            recommendations = [f"[{r.priority}] {r.action}: {r.reason}" for r in rec_records]
         else:
-            recommendations = [
-                "Maintain host safety: avoid live hostile execution on analyst workstation.",
-                "Verify all external threat attribution using verified Evidence IDs.",
-                "Retain analysis manifest and companion .sha256 for case audit integrity."
+            rec_records = [
+                RecommendationRecord(
+                    action="Maintain host safety: avoid live hostile execution on analyst workstation",
+                    reason="Suspicious or potentially hostile binary capabilities identified.",
+                    priority="HIGH" if threat_score >= 60 else "MEDIUM",
+                    trigger_finding_ids=supporting_fids[:3]
+                ),
+                RecommendationRecord(
+                    action="Verify all external threat attribution against verified Evidence IDs",
+                    reason="Attribution hypotheses must remain grounded in deterministic forensic records.",
+                    priority="LOW",
+                    trigger_finding_ids=supporting_fids[:2]
+                )
             ]
             if has_pers:
-                recommendations.append("Inspect host autostart locations and remove unauthorized persistence keys.")
+                pers_fids = [f.finding_id for f in findings if f.domain in (AnalysisDomain.PERSISTENCE, AnalysisDomain.REGISTRY)]
+                rec_records.append(RecommendationRecord(
+                    action="Inspect host autostart locations and remove unauthorized persistence keys",
+                    reason="Registry or autostart persistence indicators identified.",
+                    priority="HIGH",
+                    trigger_finding_ids=pers_fids
+                ))
             if has_net:
-                recommendations.append("Block identified external network indicators at perimeter firewalls.")
-            if advanced_triggers:
-                recommendations.extend(advanced_triggers[:3])
+                net_fids = [f.finding_id for f in findings if f.domain in (AnalysisDomain.NETWORK, AnalysisDomain.C2)]
+                rec_records.append(RecommendationRecord(
+                    action="Block identified external network endpoints at perimeter firewalls",
+                    reason="Network beaconing or external command-and-control communication observed.",
+                    priority="HIGH" if any("CONFIRMED_C2" in f.title for f in findings) else "MEDIUM",
+                    trigger_finding_ids=net_fids
+                ))
+            recommendations = [f"[{r.priority}] {r.action}: {r.reason}" for r in rec_records]
 
         analysis_conf = 1.0 if len(self.evidence_store) > 0 else 0.5
 
@@ -315,8 +345,10 @@ class AssessmentEngine:
         rep_recs = [e for e in self.evidence_store.all() if e.source_type == "REPUTATION" and e.field == "lookup_status"]
         if rep_recs:
             r_val = rep_recs[0].value
-            if r_val in ("SKIPPED_OFFLINE", "NOT_CHECKED", "LOOKUP_FAILED"):
-                rep_cov_status = r_val
+            if r_val == "SKIPPED_OFFLINE":
+                rep_cov_status = CoverageStatus.SKIPPED_OFFLINE.value
+            elif r_val in ("NOT_CHECKED", "LOOKUP_FAILED"):
+                rep_cov_status = CoverageStatus.NOT_CHECKED.value
             elif r_val in ("KNOWN_MALICIOUS", "KNOWN_SUSPICIOUS", "LOW_DETECTION", "NOT_FOUND"):
                 rep_cov_status = CoverageStatus.COMPLETED.value
             else:

@@ -287,9 +287,21 @@ class MitreTechniqueMapping(BaseModel):
 class Classification(BaseModel):
     """Structured classification distinguishing observed vs heuristic attribution."""
     value: str
-    confidence: float = 0.8
+    confidence: float = 0.0
+    status: str = "NOT_ESTABLISHED"  # OBSERVED, HEURISTIC, INFERRED, NOT_CONFIRMED, NOT_ANALYZED, NOT_ESTABLISHED
     basis: List[str] = Field(default_factory=list)
-    status: str = "HEURISTIC"  # OBSERVED, HEURISTIC, INFERRED, NOT_CONFIRMED, NOT_ANALYZED
+    hypothesis: Optional[str] = None
+    hypothesis_status: Optional[str] = None
+
+
+class RecommendationRecord(BaseModel):
+    """Grounded operational recommendation tied directly to evidence/findings."""
+    action: str
+    reason: str
+    priority: str = "LOW"  # HIGH, MEDIUM, LOW, INFORMATIONAL
+    trigger_finding_ids: List[str] = Field(default_factory=list)
+
+    model_config = ConfigDict(use_enum_values=True)
 
 
 class ScoreContribution(BaseModel):

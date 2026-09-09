@@ -195,8 +195,10 @@ class FindingEngine:
                 "SUSPICIOUS", "LIKELY_BEACON", "HIGH_CONFIDENCE_BEACON"
             ):
                 is_confirmed = classification == "CONFIRMED_C2"
-                ev_state = EvidenceState.OBSERVED if is_confirmed else (
-                    EvidenceState.HEURISTIC if classification == "OBSERVED_PERIODIC_TRAFFIC" else EvidenceState.INFERRED
+                ev_state = EvidenceState.OBSERVED if is_confirmed else EvidenceState.INFERRED
+                f_status = (
+                    FindingStatus.CONFIRMED_BEHAVIOR if is_confirmed
+                    else (FindingStatus.OBSERVED_BEHAVIOR if classification == "OBSERVED_PERIODIC_TRAFFIC" else FindingStatus.INFERRED_BEHAVIOR)
                 )
                 title = f"Confirmed C2 Channel ({b_val.get('destination_ip')})" if is_confirmed else f"Network Beaconing ({classification}): {b_val.get('destination_ip')}"
                 note = "Multi-source corroborated C2 communication channel." if is_confirmed else "Statistical periodicity observed; protocol content not independently confirmed malicious."
@@ -213,7 +215,7 @@ class FindingEngine:
                     source_evidence_ids=[b.evidence_id],
                     mitre_attack_id="T1071",
                     mitre_tactic="Command and Control",
-                    status=FindingStatus.CONFIRMED_BEHAVIOR if is_confirmed else FindingStatus.OBSERVED_BEHAVIOR,
+                    status=f_status,
                     why_it_matters="Periodic beaconing traffic is characteristic of remote command-and-control communication channels."
                 )
 

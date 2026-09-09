@@ -79,9 +79,11 @@ class TestAIValidation(unittest.TestCase):
         val_meta = validated.ai_validation
         self.assertIn("malware_family", val_meta.get("downgraded_fields", []))
 
-        # Classification must indicate unconfirmed hypothesis
-        self.assertIn("Hypothesis: Emotet.Banker.v4", validated.classification)
-        self.assertIn("[UNCONFIRMED]", validated.classification)
+        # Classification must maintain structured hypothesis without string concatenation
+        self.assertIsNotNone(validated.classification_details)
+        self.assertEqual(validated.classification_details.hypothesis, "Emotet.Banker.v4")
+        self.assertEqual(validated.classification_details.hypothesis_status, "UNCONFIRMED")
+        self.assertNotIn("Emotet", validated.classification)
 
     def test_threat_score_override_rejected(self):
         """AI cannot override deterministic threat score or threat level."""
@@ -98,6 +100,68 @@ class TestAIValidation(unittest.TestCase):
         # Deterministic authority preserved
         self.assertEqual(validated.threat_score, self.baseline.threat_score)
         self.assertEqual(validated.threat_level, self.baseline.threat_level)
+
+
+    def test_semantic_evidence_relevance_validation(self):
+        """A SHA256 evidence record must not be accepted as support for Process Injection (T1055)."""
+        sha256_rec = self.store.find(field="sha256")[0]
+        ai_proposal = {
+            "mitre_attack": [
+                {
+                    "technique_id": "T1055",
+                    "technique_name": "Process Injection",
+                    "tactic": "Defense Evasion",
+                    "evidence_ids": [sha256_rec.evidence_id]
+                }
+            ]
+        }
+        validated = self.synthesizer._merge_and_validate(ai_proposal, self.baseline, self.store)
+        val_meta = validated.ai_validation
+        # Technique citing only SHA256 must be rejected for Process Injection
+        self.assertIn("mitre_technique_T1055", val_meta.get("rejected_fields", []))
+        t1055_techniques = [t for t in validated.mitre_techniques if t.get("technique_id") == "T1055"]
+        self.assertEqual(len(t1055_techniques), 0)
+
+    def test_unsupported_narrative_claims_rejected_on_clean_sample(self):
+        """AI narrative claiming confirmed injection or C2 on a clean sample must be rejected."""
+        ai_proposal = {
+            "executive_summary": "Confirmed malicious C2 communication established with host injection."
+        }
+        validated = self.synthesizer._merge_and_validate(ai_proposal, self.baseline, self.store)
+        val_meta = validated.ai_validation
+        self.assertIn("executive_summary", val_meta.get("rejected_fields", []))
+        self.assertEqual(validated.summary, self.baseline.summary)
+
+    def test_containment_recommendations_rejected_on_zero_score(self):
+        """Containment actions (firewall block, quarantine) must be rejected when findings and score are 0."""
+        ai_proposal = {
+            "incident_recommendations": [
+                "Block perimeter firewall and isolate host immediately.",
+                "Quarantine affected systems."
+            ]
+        }
+        validated = self.synthesizer._merge_and_validate(ai_proposal, self.baseline, self.store)
+        val_meta = validated.ai_validation
+        self.assertIn("recommendations", val_meta.get("rejected_fields", []))
+        self.assertEqual(validated.recommendations, self.baseline.recommendations)
+
+    def test_structured_classification_fields(self):
+        """Ensure Classification model adheres strictly to value, confidence, status, basis, hypothesis, hypothesis_status."""
+        ai_proposal = {
+            "malware_family": "LockBit"
+        }
+        validated = self.synthesizer._merge_and_validate(ai_proposal, self.baseline, self.store)
+        c = validated.classification_details
+        self.assertIsNotNone(c)
+        self.assertEqual(c.hypothesis, "LockBit")
+        self.assertEqual(c.hypothesis_status, "UNCONFIRMED")
+        self.assertEqual(c.value, self.baseline.classification)
+        self.assertIn("value", c.model_dump())
+        self.assertIn("confidence", c.model_dump())
+        self.assertIn("status", c.model_dump())
+        self.assertIn("basis", c.model_dump())
+        self.assertIn("hypothesis", c.model_dump())
+        self.assertIn("hypothesis_status", c.model_dump())
 
 
 if __name__ == "__main__":

@@ -53,7 +53,7 @@ class NetworkAnalyzer:
 
     def __init__(self, pcap_path: Path, evidence_store: Optional[EvidenceStore] = None):
         self.pcap_path = Path(pcap_path) if pcap_path else None
-        self.evidence_store = evidence_store or EvidenceStore()
+        self.evidence_store = evidence_store if evidence_store is not None else EvidenceStore()
         self.errors: List[str] = []
 
     def analyze(self) -> Dict[str, Any]:
@@ -242,7 +242,7 @@ class NetworkAnalyzer:
                 ev_state = EvidenceState.INFERRED
             elif beacon_score >= 0.35:
                 cls = "OBSERVED_PERIODIC_TRAFFIC"
-                ev_state = EvidenceState.HEURISTIC
+                ev_state = EvidenceState.INFERRED
             else:
                 cls = "NORMAL"
                 ev_state = EvidenceState.OBSERVED
@@ -276,11 +276,16 @@ class NetworkAnalyzer:
                     provenance={"destination": f"{dst_ip}:{dst_port}", "score": beacon_score}
                 )
 
+        dns_query_list = [{"domain": d, "resolved_ips": ips} for d, ips in dns_map.items()]
+
         return {
+            "status": "OBSERVED" if packet_idx > 0 else "NOT_ANALYZED",
             "packet_count": packet_idx,
-            "dns_queries": dns_map,
+            "dns_queries": dns_query_list,
+            "dns_map": dns_map,
             "http_requests": http_requests,
             "tls_sni": tls_sni_list,
             "beacon_candidates": beacons,
+            "c2_beacons": beacons,
             "errors": self.errors
         }

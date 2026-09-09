@@ -40,17 +40,17 @@ from core.validators import validate_finding_evidence_grounding
 from integrations.registry import CapabilityRegistry
 
 from analyzers.reputation.stage import ReputationStage
-from analyzer.static import PEStaticAnalyzer
-from analyzer.behavioral import BehavioralAnalyzer
-from analyzer.code import CodeAnalyzer
+from analyzers.static.pe_analyzer import PEStaticAnalyzer
+from analyzers.behavioral.event_normalizer import BehavioralAnalyzer
+from analyzers.code.capstone_triage import CodeAnalyzer
 from ai.agent import LLMThreatSynthesizer
 from integrations.adapters import ADAPTER_REGISTRY
 
-from report.adapters.json_adapter import JSONReportAdapter
-from report.adapters.markdown_adapter import MarkdownReportAdapter
-from report.adapters.generic_docx_adapter import GenericDOCXReportAdapter
-from report.adapters.sans_style_adapter import SANSStyleReportAdapter
-from report.template_validator import TemplateValidator
+from reporting.adapters.json_adapter import JSONReportAdapter
+from reporting.adapters.markdown_adapter import MarkdownReportAdapter
+from reporting.adapters.generic_docx_adapter import GenericDOCXReportAdapter
+from reporting.adapters.sans_style_adapter import SANSStyleReportAdapter
+from reporting.validators.template_validator import TemplateValidator
 
 
 @dataclass

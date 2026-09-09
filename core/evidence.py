@@ -77,9 +77,9 @@ class MemoryEvidenceBackend(EvidenceBackend):
     def __init__(self):
         self._by_id: Dict[str, EvidenceRecord] = {}
         self._by_fingerprint: Dict[str, str] = {}  # fingerprint -> evidence_id
-        self._by_artifact: Dict[str, List[str]] = {}
-        self._by_type: Dict[str, List[str]] = {}
-        self._by_domain: Dict[str, List[str]] = {}
+        self._by_artifact: Dict[str, set] = {}
+        self._by_type: Dict[str, set] = {}
+        self._by_domain: Dict[str, set] = {}
 
     def add(self, record: EvidenceRecord) -> EvidenceRecord:
         eid = record.evidence_id
@@ -87,10 +87,14 @@ class MemoryEvidenceBackend(EvidenceBackend):
         if record.fingerprint:
             self._by_fingerprint[record.fingerprint] = eid
 
-        self._by_artifact.setdefault(record.source_artifact, []).append(eid)
-        self._by_type.setdefault(record.source_type, []).append(eid)
+        self._by_artifact.setdefault(record.source_artifact, set()).add(eid)
+        self._by_type.setdefault(record.source_type, set()).add(eid)
         dom_val = record.domain.value if hasattr(record.domain, "value") else str(record.domain)
-        self._by_domain.setdefault(dom_val, []).append(eid)
+        self._by_domain.setdefault(dom_val, set()).add(eid)
+        if record.additional_domains:
+            for add_dom in record.additional_domains:
+                add_val = add_dom.value if hasattr(add_dom, "value") else str(add_dom)
+                self._by_domain.setdefault(add_val, set()).add(eid)
         return record
 
     def get(self, evidence_id: str) -> Optional[EvidenceRecord]:
@@ -110,16 +114,22 @@ class MemoryEvidenceBackend(EvidenceBackend):
         dom_str = domain.value if hasattr(domain, "value") else str(domain) if domain else None
         
         if source_artifact and source_artifact in self._by_artifact:
-            candidates = [self._by_id[eid] for eid in self._by_artifact[source_artifact]]
+            candidates = [self._by_id[eid] for eid in self._by_artifact[source_artifact] if eid in self._by_id]
         elif source_type and source_type in self._by_type:
-            candidates = [self._by_id[eid] for eid in self._by_type[source_type]]
+            candidates = [self._by_id[eid] for eid in self._by_type[source_type] if eid in self._by_id]
         elif dom_str and dom_str in self._by_domain:
-            candidates = [self._by_id[eid] for eid in self._by_domain[dom_str]]
+            candidates = [self._by_id[eid] for eid in self._by_domain[dom_str] if eid in self._by_id]
         else:
             candidates = list(self._by_id.values())
 
+        # Sort candidates deterministically by evidence_id
+        candidates.sort(key=lambda x: x.evidence_id)
+
+        seen_eids = set()
         results = []
         for r in candidates:
+            if r.evidence_id in seen_eids:
+                continue
             if field and r.field != field:
                 continue
             if source_type and r.source_type != source_type:
@@ -132,6 +142,7 @@ class MemoryEvidenceBackend(EvidenceBackend):
                     (d.value if hasattr(d, "value") else str(d)) for d in r.additional_domains
                 ]:
                     continue
+            seen_eids.add(r.evidence_id)
             results.append(r)
         return results
 
@@ -436,6 +447,10 @@ class EvidenceStore:
             "parents": parents_lineage
         }
 
+    def count(self) -> int:
+        """Returns total distinct evidence records stored."""
+        return self._backend.count()
+
     def all(self) -> List[EvidenceRecord]:
         """Returns all records in order of creation."""
         return self._backend.all()
@@ -464,6 +479,10 @@ class EvidenceStore:
         """Calculates deterministic SHA256 of all sorted evidence records."""
         serialized = json.dumps(self.to_dict(), sort_keys=True)
         return hashlib.sha256(serialized.encode("utf-8")).hexdigest()
+
+    def __bool__(self) -> bool:
+        """An EvidenceStore instance is always truthy, even when empty."""
+        return True
 
     def __len__(self) -> int:
         return self._backend.count()

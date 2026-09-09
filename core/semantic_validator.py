@@ -655,8 +655,8 @@ class CaseSemanticValidator:
     def _validate_privacy_safe_output(self, case_dir: Path) -> List[ValidationIssue]:
         issues = []
         sensitive_patterns = [
-            (r"/run/media/[^\"\s\n]+", "Linux removable mount path leaked"),
-            (r"/media/[^\"\s\n]+", "Linux media mount path leaked"),
+            (r"/run/media/(?!<REDACTED_USER>)[^\"\s\n]+", "Linux removable mount path leaked"),
+            (r"/media/(?!<REDACTED_USER>)[^\"\s\n]+", "Linux media mount path leaked"),
             (r"sk-[a-zA-Z0-9]{20,}", "Raw OpenAI/Anthropic API key leaked"),
         ]
 

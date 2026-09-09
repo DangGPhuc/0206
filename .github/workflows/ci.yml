@@ -23,6 +23,11 @@ jobs:
         python-version: ${{ matrix.python-version }}
         cache: 'pip'
 
+    - name: Install System Dependencies (MinGW Cross-Compiler)
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y gcc-mingw-w64-x86-64
+
     - name: Install Core Package & Dependencies
       run: |
         python -m pip install --upgrade pip setuptools wheel
@@ -35,6 +40,10 @@ jobs:
     - name: Supply-Chain & Data Guard Audit
       run: |
         python scripts/precommit_data_guard.py
+
+    - name: Generate Harmless Test Artifacts
+      run: |
+        python tests/generate_test_artifacts.py
 
     - name: Run Test Suite
       run: |
@@ -60,3 +69,9 @@ jobs:
         test -f /tmp/ci_case_output/findings.json
         test -f /tmp/ci_case_output/analysis_manifest.json
         0206 manifest /tmp/ci_case_output/analysis_manifest.json
+        0206 validate-case /tmp/ci_case_output
+
+    - name: Discard Ephemeral Test Artifacts
+      if: always()
+      run: |
+        rm -f tests/sample_benign_triage.exe tests/sample_traffic.pcap tests/sample_procmon.csv tests/sample_source.c

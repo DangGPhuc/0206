@@ -71,6 +71,57 @@ class TestEvidenceModel(unittest.TestCase):
         self.assertEqual(len(lineage["parents"]), 1)
         self.assertEqual(lineage["parents"][0]["evidence_id"], e2.evidence_id)
 
+    def test_deduplication_indexing_memory_backend(self):
+        """Regression test: duplicate creation increments duplicate_count without duplicating find() results."""
+        store = EvidenceStore(backend=MemoryEvidenceBackend())
+        r1 = store.create("sample.exe", "IMPORT", "func", "VirtualAlloc", "PEParser", domain=AnalysisDomain.API)
+        r2 = store.create("sample.exe", "IMPORT", "func", "VirtualAlloc", "PEParser", domain=AnalysisDomain.API)
+
+        # 1. Evidence count == 1
+        self.assertEqual(len(store), 1)
+        self.assertEqual(store.count(), 1)
+        # 2. Duplicate count == 2
+        self.assertEqual(r2.duplicate_count, 2)
+        self.assertEqual(r1.evidence_id, r2.evidence_id)
+        # 3. find() returns exactly 1 record across all query paths
+        self.assertEqual(len(store.find(domain=AnalysisDomain.API)), 1)
+        self.assertEqual(len(store.find(source_type="IMPORT")), 1)
+        self.assertEqual(len(store.find(source_artifact="sample.exe")), 1)
+        self.assertEqual(len(store.find(field="func")), 1)
+        self.assertEqual(len(store.all()), 1)
+
+    def test_deduplication_indexing_sqlite_backend(self):
+        """Regression test for sqlite backend: duplicate creation maintains exact 1 record in find()."""
+        with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
+            db_path = f.name
+        try:
+            store = EvidenceStore(backend="sqlite", db_path=db_path)
+            r1 = store.create("sample.exe", "IMPORT", "func", "VirtualAlloc", "PEParser", domain=AnalysisDomain.API)
+            r2 = store.create("sample.exe", "IMPORT", "func", "VirtualAlloc", "PEParser", domain=AnalysisDomain.API)
+
+            # 1. Evidence count == 1
+            self.assertEqual(len(store), 1)
+            self.assertEqual(store.count(), 1)
+            # 2. Duplicate count == 2
+            self.assertEqual(r2.duplicate_count, 2)
+            self.assertEqual(r1.evidence_id, r2.evidence_id)
+            # 3. find() returns exactly 1 record
+            self.assertEqual(len(store.find(domain=AnalysisDomain.API)), 1)
+            self.assertEqual(len(store.find(source_type="IMPORT")), 1)
+            self.assertEqual(len(store.find(source_artifact="sample.exe")), 1)
+            self.assertEqual(len(store.find(field="func")), 1)
+            self.assertEqual(len(store.all()), 1)
+        finally:
+            if os.path.exists(db_path):
+                os.remove(db_path)
+
+    def test_evidence_state_enum_contract(self):
+        """Ensure EvidenceState only contains valid states and does NOT have HEURISTIC."""
+        valid_states = {"OBSERVED", "INFERRED", "NOT_CONFIRMED", "NOT_ANALYZED", "NOT_AVAILABLE"}
+        current_states = {s.value for s in EvidenceState}
+        self.assertEqual(valid_states, current_states)
+        self.assertFalse(hasattr(EvidenceState, "HEURISTIC"))
+
 
 if __name__ == "__main__":
     unittest.main()

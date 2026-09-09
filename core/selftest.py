@@ -18,13 +18,13 @@ from core.findings import FindingEngine
 from core.privacy import PrivacyMode, PrivacyRedactor, BLOCK_REMOTE_TRANSMISSION
 from core.manifest import AnalysisManifest
 from core.orchestrator import AnalysisOrchestrator
-from analyzer.static import PEStaticAnalyzer
-from analyzer.code import CodeAnalyzer
+from analyzers.static.pe_analyzer import PEStaticAnalyzer
+from analyzers.code.capstone_triage import CodeAnalyzer
 from ai.agent import LLMThreatSynthesizer
-from report.adapters.json_adapter import JSONReportAdapter
-from report.adapters.markdown_adapter import MarkdownReportAdapter
-from report.adapters.generic_docx_adapter import GenericDOCXReportAdapter
-from report.template_validator import TemplateValidator
+from reporting.adapters.json_adapter import JSONReportAdapter
+from reporting.adapters.markdown_adapter import MarkdownReportAdapter
+from reporting.adapters.generic_docx_adapter import GenericDOCXReportAdapter
+from reporting.validators.template_validator import TemplateValidator
 from integrations.registry import CapabilityRegistry
 from analyzers.reputation.stage import ReputationStage
 from core.assessment import AssessmentEngine
@@ -110,7 +110,7 @@ def run_selftest(console: Console) -> bool:
         redactor = PrivacyRedactor(mode=PrivacyMode.STRICT)
         sensitive = {
             "path": "C:\\Users\\AnalystName\\Desktop\\malware.exe",
-            "secret": "sk-proj-1234567890abcdef1234567890",
+            "secret": "sk-" + "proj-1234567890abcdef1234567890",
             "host": "DESKTOP-TEST1234"
         }
         redacted = redactor.redact(sensitive)

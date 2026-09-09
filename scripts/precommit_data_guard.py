@@ -40,8 +40,9 @@ def check_staged_files() -> bool:
         proc = subprocess.run(cmd, capture_output=True, text=True, check=True)
         staged_files = [f.strip() for f in proc.stdout.splitlines() if f.strip()]
     except Exception as e:
-        print(f"[!] Warning: Unable to inspect git index: {e}")
-        return True
+        print(f"[!] Security Guard Error: Unable to inspect git index: {e}")
+        print("[!] Pre-commit guard failed closed to prevent accidental leakage of sensitive data.")
+        return False
 
     violations = []
 

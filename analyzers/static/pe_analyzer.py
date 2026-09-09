@@ -99,10 +99,11 @@ class PEStaticAnalyzer:
 
     def __init__(self, file_path: Path, evidence_store: Optional[EvidenceStore] = None):
         self.file_path = Path(file_path)
-        self.evidence_store = evidence_store or EvidenceStore()
+        self.evidence_store = evidence_store if evidence_store is not None else EvidenceStore()
         self.hashes: Dict[str, str] = {}
         self.pe: Optional[pefile.PE] = None
         self.errors: List[str] = []
+        self.warnings: List[str] = []
 
     def analyze(self) -> Dict[str, Any]:
         """Runs complete static PE extraction pipeline."""
@@ -144,6 +145,7 @@ class PEStaticAnalyzer:
         imports_data: Dict[str, List[str]] = {}
         exports_data: List[str] = []
         imphash = "N/A"
+        rwx_found = False
 
         try:
             self.pe = pefile.PE(data=raw_bytes, fast_load=False)
@@ -154,7 +156,7 @@ class PEStaticAnalyzer:
             )
 
             # Machine & Arch
-            arch = "x86" if self.pe.FILE_HEADER.Machine == 0x14C else "x64" if self.pe.FILE_HEADER.Machine == 0x8664 else "Unknown"
+            arch = "32-bit (x86)" if self.pe.FILE_HEADER.Machine == 0x14C else "64-bit (x64)" if self.pe.FILE_HEADER.Machine == 0x8664 else "Unknown"
             self.evidence_store.create(
                 self.file_path.name, "PE_HEADER", "architecture", arch, "PEStaticAnalyzer",
                 artifact_sha256=sha256, domain=AnalysisDomain.PE
@@ -276,6 +278,7 @@ class PEStaticAnalyzer:
 
         except pefile.PEFormatError as e:
             self.errors.append(f"PE parsing error: {e}")
+            self.warnings.append(f"PE parsing warning: {e}")
             self.evidence_store.create(
                 self.file_path.name, "PE_HEADER", "is_pe", False, "PEStaticAnalyzer",
                 artifact_sha256=sha256, domain=AnalysisDomain.PE, provenance={"error": str(e)}
@@ -368,6 +371,7 @@ class PEStaticAnalyzer:
             "strings": strings_data,
             "api_hash_matches": api_hash_matches,
             "packer_assessment": packer_assessment,
-            "errors": self.errors
+            "errors": self.errors,
+            "warnings": self.warnings
         }
         return pe_info

@@ -5,6 +5,7 @@ __pycache__/
 *.py[cod]
 *$py.class
 *.so
+.pytest_cache/
 .env
 *.env
 venv/
@@ -13,6 +14,7 @@ env/
 *.egg-info/
 build/
 dist/
+*.zip
 
 # Malware samples & binaries (STRICT: Never commit binaries)
 *.exe

@@ -14,7 +14,7 @@ class DocumentAnalyzer:
 
     def __init__(self, file_path: Path, evidence_store: Optional[EvidenceStore] = None):
         self.file_path = Path(file_path)
-        self.evidence_store = evidence_store or EvidenceStore()
+        self.evidence_store = evidence_store if evidence_store is not None else EvidenceStore()
 
     def analyze(self) -> Dict[str, Any]:
         if not self.file_path.exists():
