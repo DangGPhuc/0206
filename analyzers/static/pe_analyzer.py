@@ -8,7 +8,7 @@ import math
 import re
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Dict, List, Any, Optional
+from typing import Dict, List, Any, Optional, Union
 import pefile
 
 from config import (
@@ -16,6 +16,7 @@ from config import (
     ENTROPY_PACKED_THRESHOLD, SUSPICIOUS_SECTIONS,
     SUSPICIOUS_APIS, SUSPICIOUS_STRING_KEYWORDS
 )
+from analyzers.contract import AnalyzerContract, AnalysisStage, AnalyzerSafetyLevel
 from core.schemas import AnalysisDomain, EvidenceState
 from core.evidence import EvidenceStore
 from core.manifest import hash_file_streaming
@@ -70,11 +71,13 @@ def extract_strings(data: bytes, min_len: int = 4, max_strings: int = MAX_STRING
     url_re = re.compile(r'https?://[a-zA-Z0-9\-\._~:/\?#\[\]@!\$&\'\(\)\*\+,;=%]+', re.IGNORECASE)
     ip_re = re.compile(r'\b(?:(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.){3}(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\b')
     reg_re = re.compile(r'(?:HKEY_LOCAL_MACHINE|HKEY_CURRENT_USER|HKLM|HKCU|Software\\Microsoft\\[a-zA-Z0-9_\\]+)', re.IGNORECASE)
+    mutex_re = re.compile(r'(?:(?:Global|Local)\\[a-zA-Z0-9_\-\.]{3,64}|[a-zA-Z0-9_]{3,32}Mutex[a-zA-Z0-9_]*)', re.IGNORECASE)
 
     joined_text = '\n'.join(all_strings)
     urls = list(set(url_re.findall(joined_text)))
     ips = list(set(ip_re.findall(joined_text)))
     registry_keys = list(set(reg_re.findall(joined_text)))
+    mutexes = list(set(mutex_re.findall(joined_text)))
 
     suspicious_found = []
     for s in all_strings:
@@ -89,25 +92,78 @@ def extract_strings(data: bytes, min_len: int = 4, max_strings: int = MAX_STRING
         "urls": urls[:30],
         "ips": ips[:30],
         "registry_keys": registry_keys[:30],
+        "mutexes": mutexes[:20],
         "suspicious_commands": suspicious_found[:40],
         "total_strings_count": len(all_strings)
     }
 
 
-class PEStaticAnalyzer:
+class PEStaticAnalyzer(AnalyzerContract):
     """Performs full static inspection of Windows PE binaries with evidence grounding."""
 
-    def __init__(self, file_path: Path, evidence_store: Optional[EvidenceStore] = None):
-        self.file_path = Path(file_path)
+    @property
+    def name(self) -> str:
+        return "PEStaticAnalyzer"
+
+    @property
+    def domains(self) -> List[AnalysisDomain]:
+        return [
+            AnalysisDomain.PE,
+            AnalysisDomain.LOADER,
+            AnalysisDomain.PACKING,
+            AnalysisDomain.OBFUSCATION,
+            AnalysisDomain.API,
+            AnalysisDomain.PERSISTENCE,
+            AnalysisDomain.PROCESS,
+            AnalysisDomain.NETWORK,
+            AnalysisDomain.REGISTRY,
+        ]
+
+    @property
+    def stage(self) -> AnalysisStage:
+        return AnalysisStage.BASIC_STATIC
+
+    @property
+    def input_requirements(self) -> List[str]:
+        return ["sample_path"]
+
+    @property
+    def output_evidence_types(self) -> List[str]:
+        return [
+            "FILE_METADATA",
+            "PE_HEADER",
+            "PE_SECTION",
+            "PE_IMPORT",
+            "PE_EXPORT",
+            "PE_RESOURCE",
+            "PE_METRICS",
+            "BINARY_STRINGS",
+            "BINARY_DATA",
+            "EMBEDDED_ARTIFACT",
+            "HEURISTIC_ANALYZER",
+        ]
+
+    @property
+    def dependencies(self) -> List[str]:
+        return ["pefile"]
+
+    @property
+    def safety_level(self) -> AnalyzerSafetyLevel:
+        return AnalyzerSafetyLevel.SAFE_HOST
+
+    def __init__(self, file_path: Optional[Union[str, Path]] = None, evidence_store: Optional[EvidenceStore] = None):
+        self.file_path = Path(file_path) if file_path is not None else None
         self.evidence_store = evidence_store if evidence_store is not None else EvidenceStore()
         self.hashes: Dict[str, str] = {}
         self.pe: Optional[pefile.PE] = None
         self.errors: List[str] = []
         self.warnings: List[str] = []
 
-    def analyze(self) -> Dict[str, Any]:
+    def analyze(self, file_path: Optional[Union[str, Path]] = None) -> Dict[str, Any]:
         """Runs complete static PE extraction pipeline."""
-        if not self.file_path.exists():
+        if file_path is not None:
+            self.file_path = Path(file_path)
+        if self.file_path is None or not self.file_path.exists():
             raise FileNotFoundError(f"Sample file not found: {self.file_path}")
 
         file_size = self.file_path.stat().st_size
@@ -301,6 +357,63 @@ class PEStaticAnalyzer:
                 self.file_path.name, "BINARY_STRINGS", "embedded_registry_key", reg, "PEStaticAnalyzer",
                 artifact_sha256=sha256, domain=AnalysisDomain.REGISTRY
             )
+        for mut in strings_data.get("mutexes", []):
+            self.evidence_store.create(
+                self.file_path.name, "BINARY_STRINGS", "mutex_indicator", mut, "PEStaticAnalyzer",
+                artifact_sha256=sha256, domain=AnalysisDomain.PROCESS
+            )
+
+        # Overlay & Embedded Artifacts Detection
+        embedded_artifacts: Dict[str, Any] = {}
+        if self.pe:
+            try:
+                overlay_offset = self.pe.get_overlay_data_offset()
+                if overlay_offset is not None and overlay_offset < file_size:
+                    overlay_size = file_size - overlay_offset
+                    overlay_bytes = raw_bytes[overlay_offset:] if overlay_offset < len(raw_bytes) else b""
+                    overlay_entropy = calculate_shannon_entropy(overlay_bytes)
+                    is_overlay_exe = overlay_bytes.startswith(b"MZ")
+                    embedded_artifacts["overlay"] = {
+                        "offset": hex(overlay_offset),
+                        "size": overlay_size,
+                        "entropy": overlay_entropy,
+                        "is_executable": is_overlay_exe
+                    }
+                    self.evidence_store.create(
+                        self.file_path.name, "EMBEDDED_ARTIFACT", "pe_overlay",
+                        embedded_artifacts["overlay"], "PEStaticAnalyzer",
+                        artifact_sha256=sha256, domain=AnalysisDomain.LOADER,
+                        source_offset=hex(overlay_offset)
+                    )
+            except Exception:
+                pass
+
+            # Resource executable payload inspection
+            try:
+                if hasattr(self.pe, 'DIRECTORY_ENTRY_RESOURCE'):
+                    embedded_pes = []
+                    for resource_type in self.pe.DIRECTORY_ENTRY_RESOURCE.entries:
+                        if hasattr(resource_type, 'directory'):
+                            for resource_id in resource_type.directory.entries:
+                                if hasattr(resource_id, 'directory'):
+                                    for resource_lang in resource_id.directory.entries:
+                                        data_rva = resource_lang.data.struct.OffsetToData
+                                        size = resource_lang.data.struct.Size
+                                        res_bytes = self.pe.get_data(data_rva, min(size, 64))
+                                        if res_bytes.startswith(b"MZ"):
+                                            embedded_pes.append({
+                                                "resource_type": str(resource_type.name or resource_type.id),
+                                                "size": size
+                                            })
+                    if embedded_pes:
+                        embedded_artifacts["embedded_pe_resources"] = embedded_pes
+                        self.evidence_store.create(
+                            self.file_path.name, "EMBEDDED_ARTIFACT", "embedded_pe_in_resource",
+                            embedded_pes, "PEStaticAnalyzer",
+                            artifact_sha256=sha256, domain=AnalysisDomain.LOADER
+                        )
+            except Exception:
+                pass
 
         # 7. Win32 API Hashing Precomputed Constants Scan
         api_hash_matches = scan_binary_for_api_hashes(raw_bytes)
@@ -371,6 +484,7 @@ class PEStaticAnalyzer:
             "strings": strings_data,
             "api_hash_matches": api_hash_matches,
             "packer_assessment": packer_assessment,
+            "embedded_artifacts": embedded_artifacts,
             "errors": self.errors,
             "warnings": self.warnings
         }

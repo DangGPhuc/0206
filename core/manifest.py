@@ -85,8 +85,14 @@ class AnalysisManifest(BaseModel):
 
     # Operational Modes
     ai_mode: str = "offline"
+    ai_metadata: Dict[str, Any] = Field(default_factory=dict)
     privacy_mode: str = "strict"
     profile: str = "standard"
+    sandbox_provider: Optional[str] = "BuiltinSafe"
+    network_mode: Optional[str] = "ISOLATED"
+    snapshot_identifier: Optional[str] = None
+    configuration_hash: Optional[str] = None
+    reputation: Dict[str, Any] = Field(default_factory=dict)
     template_name: Optional[str] = None
     template_sha256: Optional[str] = None
     adapter_versions: Dict[str, str] = Field(default_factory=dict)

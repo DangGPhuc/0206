@@ -12,6 +12,8 @@ from sandbox.schema import (
 )
 from sandbox.backends.builtin import BuiltinSandboxBackend
 from sandbox.backends.qemu import QemuSandboxBackend
+from sandbox.backends.vmware import VMwareSandboxBackend
+from sandbox.backends.virtualbox import VirtualBoxSandboxBackend
 from sandbox.backends.external import ExternalSandboxBackend
 
 logger = logging.getLogger("0206.sandbox.controller")
@@ -27,7 +29,10 @@ class SandboxController:
         self.config = config or SandboxGuestConfig()
         self.backends: Dict[str, SandboxBackend] = {
             "builtin": BuiltinSandboxBackend(self.config),
+            "builtin_safe": BuiltinSandboxBackend(self.config),
             "qemu": QemuSandboxBackend(self.config),
+            "vmware": VMwareSandboxBackend(self.config),
+            "virtualbox": VirtualBoxSandboxBackend(self.config),
             "external": ExternalSandboxBackend(self.config),
         }
         self.selected_backend: SandboxBackend = self.backends.get(backend_type, self.backends["builtin"])
@@ -45,20 +50,24 @@ class SandboxController:
 
     def run_safe_session(self, sample_path: str, output_dir: str) -> SandboxExecutionTrace:
         """
-        Executes a controlled dynamic analysis session lifecycle:
-        prepare -> snapshot -> execute -> monitor -> collect -> stop -> revert -> cleanup
+        Executes a controlled dynamic analysis session 12-stage lifecycle:
+        prepare -> verify_baseline -> snapshot -> start -> transfer -> execute -> monitor -> collect -> stop -> revert -> verify_clean -> cleanup
         """
         backend = self.selected_backend
         logger.info(f"Initiating sandbox session with backend: {backend.name}")
 
         try:
             backend.prepare()
+            backend.verify_baseline()
             backend.snapshot()
+            backend.start()
+            backend.transfer(sample_path)
             backend.execute(sample_path)
             backend.monitor()
             trace = backend.collect(output_dir)
             backend.stop()
             backend.revert()
+            backend.verify_clean()
             backend.cleanup()
             return trace
         except Exception as ex:

@@ -1,6 +1,7 @@
 """
 0206 - Modular Ingestion Analyzers
 """
+from analyzers.contract import AnalyzerContract, AnalysisStage, AnalyzerSafetyLevel
 from analyzers.static.pe_analyzer import PEStaticAnalyzer
 from analyzers.code.capstone_triage import CodeAnalyzer
 from analyzers.behavioral.event_normalizer import BehavioralAnalyzer
@@ -14,6 +15,9 @@ from analyzers.shellcode.shellcode_analyzer import ShellcodeAnalyzer
 from analyzers.documents.document_analyzer import DocumentAnalyzer
 
 __all__ = [
+    "AnalyzerContract",
+    "AnalysisStage",
+    "AnalyzerSafetyLevel",
     "PEStaticAnalyzer",
     "CodeAnalyzer",
     "BehavioralAnalyzer",

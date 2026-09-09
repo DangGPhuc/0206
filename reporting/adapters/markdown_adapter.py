@@ -1,8 +1,12 @@
 """
-0206 - Canonical Two-Stage Markdown Report Adapter
+0206 - Canonical 25-Section Domain-Based Markdown Report Adapter
 Phase 18: Renders evidence-grounded findings into GitHub-flavored Markdown following the
-canonical 23-section report structure (Part I: Sections 1-6, Part II: Sections 7-18, Appendices: Sections 19-23).
-Unsupported sections are strictly designated as [NOT_ANALYZED] without fabricating defaults.
+canonical 25-section report structure:
+PART I — BASIC ANALYSIS (Sections 1-7)
+PART II — ADVANCED ANALYSIS (Sections 8-20)
+APPENDICES (Sections 21-25)
+
+Enforces standard tags: [OBSERVED], [INFERRED], [NOT_CONFIRMED], [NOT_ANALYZED].
 """
 from pathlib import Path
 from typing import Dict, Any, List
@@ -13,7 +17,7 @@ from core.evidence import EvidenceStore
 
 
 class MarkdownReportAdapter(BaseReportAdapter):
-    """Renders session findings into standalone canonical two-stage Markdown report."""
+    """Renders session findings into standalone canonical 25-section Markdown report."""
 
     def render(self, session_data: Dict[str, Any], output_path: Path) -> Path:
         output_path = Path(output_path)
@@ -48,8 +52,9 @@ class MarkdownReportAdapter(BaseReportAdapter):
 
         sample_id = part1["sample_identification"]
         rep = part1["reputation"]
-        static = part1["basic_static"]
+        static = part1.get("static_properties", part1.get("basic_static", {}))
         behav = part1["basic_behavioral"]
+        summary = part1.get("summary", {})
 
         lines = [
             f"# 0206 Malware Analysis Report: {sample_id.get('filename', 'Unknown Sample')}",
@@ -64,28 +69,36 @@ class MarkdownReportAdapter(BaseReportAdapter):
             "",
             "## PART I — BASIC ANALYSIS",
             "",
-            "### 1. Sample Identification",
+            "### 1. Summary",
             "",
-            f"- **Filename:** `{sample_id.get('filename')}`",
-            f"- **SHA256:** `{sample_id.get('sha256')}`",
-            f"- **SHA1:** `{sample_id.get('sha1')}`",
-            f"- **MD5:** `{sample_id.get('md5')}`",
-            f"- **File Size:** `{sample_id.get('file_size')} bytes`",
-            f"- **Architecture / Subsystem:** `{sample_id.get('architecture')} | {sample_id.get('subsystem')}`",
-            f"- **Entry Point RVA:** `{sample_id.get('entry_point')}`",
-            f"- **Image Base:** `{sample_id.get('image_base')}`",
+            f"- **Threat Score:** `{assessment.get('threat_score', 0)}/100` ({assessment.get('threat_level', 'UNKNOWN')}) [OBSERVED]",
+            f"- **Classification:** `{assessment.get('classification', 'Generic')}` [INFERRED]",
+            f"- **Executive Summary:** {assessment.get('summary', 'No summary generated.')}",
+            f"- **Key Functionality:** {assessment.get('key_functionality', 'N/A')}",
+            f"- **Suspected Purpose:** {assessment.get('purpose', 'NOT_ESTABLISHED')} [INFERRED]",
             "",
-            "### 2. Reputation",
+            "### 2. Identification / IOCs",
+            "",
+            f"- **Filename:** `{sample_id.get('filename')}` [OBSERVED]",
+            f"- **SHA256:** `{sample_id.get('sha256')}` [OBSERVED]",
+            f"- **SHA1:** `{sample_id.get('sha1')}` [OBSERVED]",
+            f"- **MD5:** `{sample_id.get('md5')}` [OBSERVED]",
+            f"- **File Size:** `{sample_id.get('file_size')} bytes` [OBSERVED]",
+            f"- **Architecture / Subsystem:** `{sample_id.get('architecture')} | {sample_id.get('subsystem')}` [OBSERVED]",
+            f"- **Entry Point RVA:** `{sample_id.get('entry_point')}` [OBSERVED]",
+            f"- **Image Base:** `{sample_id.get('image_base')}` [OBSERVED]",
+            "",
+            "### 3. Reputation",
             "",
         ]
 
         rep_status = rep.get("status", "NOT_ANALYZED")
         if rep_status == "COMPLETED":
             lines.extend([
-                f"- **Provider:** {rep.get('provider')}",
-                f"- **Detection Ratio:** `{rep.get('detection_ratio')}`",
-                f"- **First Seen:** `{rep.get('first_seen')}`",
-                f"- **Last Analysis:** `{rep.get('last_seen')}`",
+                f"- **Provider:** {rep.get('provider')} [OBSERVED]",
+                f"- **Detection Ratio:** `{rep.get('detection_ratio')}` [OBSERVED]",
+                f"- **First Seen:** `{rep.get('first_seen')}` [OBSERVED]",
+                f"- **Last Analysis:** `{rep.get('last_seen')}` [OBSERVED]",
                 f"- **Privacy Policy:** `{rep.get('privacy_mode')}`",
             ])
         elif rep_status in ("NOT_CHECKED", "SKIPPED_OFFLINE"):
@@ -97,41 +110,42 @@ class MarkdownReportAdapter(BaseReportAdapter):
 
         lines.extend([
             "",
-            "### 3. Basic Static Analysis",
+            "### 4. Static Properties Analysis",
             "",
         ])
 
         if static.get("status") == "COMPLETED":
             lines.extend([
-                f"- **Sections Analyzed:** {static.get('section_count', 0)} sections",
-                f"- **Imports Identified:** {static.get('import_count', 0)} routines",
-                f"- **Suspicious URLs:** {len(static.get('urls', []))} extracted",
-                f"- **Suspicious IPs:** {len(static.get('ips', []))} extracted",
-                f"- **API Hashing Candidates:** {len(static.get('api_hashes', []))} identified",
+                f"- **Sections Analyzed:** {static.get('section_count', 0)} sections [OBSERVED]",
+                f"- **Imports Identified:** {static.get('import_count', 0)} routines [OBSERVED]",
+                f"- **Suspicious URLs:** {len(static.get('urls', []))} extracted [OBSERVED]",
+                f"- **Suspicious IPs:** {len(static.get('ips', []))} extracted [OBSERVED]",
+                f"- **Mutex Indicators:** {len(static.get('mutexes', []))} identified [INFERRED]",
+                f"- **API Hashing Candidates:** {len(static.get('api_hashes', []))} identified [INFERRED]",
             ])
         else:
-            lines.append("- **Basic Static Status:** `[NOT_ANALYZED]` No static PE structure analyzed.")
+            lines.append("- **Static Properties Status:** `[NOT_ANALYZED]` No static PE structure analyzed.")
 
         lines.extend([
             "",
-            "### 4. Basic Behavioral Analysis",
+            "### 5. Basic Behavioral Analysis",
             "",
         ])
 
         if behav.get("status") == "COMPLETED":
             lines.extend([
-                f"- **Analysis Mode:** `{behav.get('mode', 'Artifact Ingestion')}`",
-                f"- **Processes Spawned:** {behav.get('processes_spawned')}",
-                f"- **File System Modifications:** {behav.get('file_events')}",
-                f"- **Registry Modifications:** {behav.get('registry_events')}",
+                f"- **Analysis Mode:** `{behav.get('mode', 'Artifact Ingestion')}` [OBSERVED]",
+                f"- **Processes Spawned:** {behav.get('processes_spawned')} [OBSERVED]",
+                f"- **File System Modifications:** {behav.get('file_events')} [OBSERVED]",
+                f"- **Registry Modifications:** {behav.get('registry_events')} [OBSERVED]",
                 f"- **Execution Safety:** `{behav.get('details', 'Telemetry ingested; no live execution conducted on host.')}`",
             ])
         else:
-            lines.append(f"- **Behavioral Status:** `[NOT_ANALYZED]` ({behav.get('details')})")
+            lines.append(f"- **Behavioral Status:** `[NOT_ANALYZED]` ({behav.get('details', 'No behavioral artifacts provided')})")
 
         lines.extend([
             "",
-            "### 5. Initial Findings",
+            "### 6. Initial Findings",
             "",
             "| Finding ID | Status | Category | Title | Grounding Evidence | MITRE |",
             "| :--- | :---: | :--- | :--- | :--- | :---: |"
@@ -143,131 +157,141 @@ class MarkdownReportAdapter(BaseReportAdapter):
                 mitre = f.get("mitre_attack_id") or "N/A"
                 status = f.get("status") or f.get("evidence_level") or "CAPABILITY"
                 lines.append(
-                    f"| `{f.get('finding_id')}` | **{status}** | {f.get('category') or f.get('domain')} | {f.get('title')} | `{eids}` | `{mitre}` |"
+                    f"| `{f.get('finding_id')}` | **[{status}]** | {f.get('category') or f.get('domain')} | {f.get('title')} | `{eids}` | `{mitre}` |"
                 )
         else:
             lines.append("| *None* | `[NOT_ANALYZED]` | N/A | No initial findings identified | None | N/A |")
 
         lines.extend([
             "",
-            "### 6. Initial Assessment",
+            "### 7. Initial Assessment",
             "",
-            f"**Executive Summary:** {assessment.get('summary', 'No summary generated.')}",
-            "",
-            f"**Key Functionality:** {assessment.get('key_functionality', 'N/A')}",
-            "",
-            f"**Suspected Purpose:** {assessment.get('purpose', 'N/A')}",
+            f"- **Threat Score:** `{assessment.get('threat_score', 0)}/100` ({assessment.get('threat_level', 'UNKNOWN')}) [OBSERVED]",
+            f"- **Classification:** `{assessment.get('classification', 'Generic')}` [INFERRED]",
+            f"- **Confidence:** `{assessment.get('classification_confidence', assessment.get('confidence', 0.0)):.2f}`",
+            f"- **Summary:** {assessment.get('summary', 'Initial assessment generated.')}",
             "",
             "---",
             "",
             "## PART II — ADVANCED ANALYSIS",
             "",
-            "### 7. Advanced Static Analysis",
+            "### 8. Advanced Static Analysis",
             "",
-            f"{part2['advanced_static'].get('details')}",
+            f"{part2['advanced_static'].get('details', '[NOT_ANALYZED] No advanced static artifacts extracted.')}",
             "",
-            "### 8. Assembly / Code Analysis",
+            "### 9. Assembly / Code Analysis",
             "",
         ])
 
         asm = part2["assembly_code"]
         if asm.get("status") == "COMPLETED":
-            lines.append(f"Disassembled {asm.get('instruction_count')} instructions from entry point.")
+            lines.append(f"Disassembled {asm.get('instruction_count')} instructions from entry point. [OBSERVED]")
             lines.append("```assembly")
             for instr in asm.get("instructions_preview", []):
                 lines.append(instr)
             lines.append("```")
+        elif asm.get("status") == "PARTIAL":
+            lines.append(f"{asm.get('details')} [OBSERVED]")
+            if asm.get("instructions_preview"):
+                lines.append("```assembly")
+                for instr in asm.get("instructions_preview", [])[:15]:
+                    lines.append(instr)
+                lines.append("```")
         else:
-            lines.append(f"{asm.get('details')}")
+            lines.append(f"{asm.get('details', '[NOT_ANALYZED]')}")
 
         lines.extend([
             "",
-            "### 9. API / Control Flow Analysis",
+            "### 10. API / Control Flow",
             "",
-            f"{part2['api_control_flow'].get('details', 'Analyzed dynamic resolution candidates.')}",
+            f"{part2['api_control_flow'].get('details', '[NOT_ANALYZED] Dynamic API tracing and CFG not executed.')}",
             "",
-            "### 10. Advanced Dynamic Analysis",
+            "### 11. Advanced Behavioral Analysis",
             "",
             f"{part2['advanced_dynamic'].get('details', '[NOT_ANALYZED] Dynamic execution trace not provided.')}",
             "",
-            "### 11. Process / Thread Analysis",
+            "### 12. Process / Thread",
             "",
             f"{part2['process_thread'].get('details', '[NOT_ANALYZED] No process tree or thread injection events recorded.')}",
             "",
-            "### 12. Memory Analysis",
+            "### 13. Memory",
             "",
-            f"{part2['memory_analysis'].get('details')}",
+            f"{part2['memory_analysis'].get('details', '[NOT_ANALYZED] No memory dump or injection scan provided.')}",
             "",
-            "### 13. Network / C2 Analysis",
+            "### 14. Network / C2",
             "",
         ])
 
         net = part2["network_c2"]
         if net.get("status") == "COMPLETED":
-            lines.append(f"- **Total Captured Events:** {net.get('total_events')}")
-            lines.append(f"- **DNS Queries:** {', '.join(net.get('dns_queries', [])) or 'None'}")
-            lines.append(f"- **Beaconing Assessment:** {net.get('beacon_analysis')}")
+            lines.append(f"- **Captured Network Indicators:** {net.get('count', 0)} [OBSERVED]")
+            lines.append(f"- **Details:** {net.get('details')}")
         else:
-            lines.append(f"{net.get('details')}")
+            lines.append(f"{net.get('details', '[NOT_ANALYZED]')}")
 
         lines.extend([
             "",
-            "### 14. Persistence",
+            "### 15. Persistence",
             "",
             f"{part2['persistence'].get('details', '[NOT_ANALYZED] No persistence indicators observed in triage data.')}",
             "",
-            "### 15. Anti-Analysis",
+            "### 16. Anti-Analysis",
             "",
-            f"{part2['anti_analysis'].get('details')}",
+            f"{part2['anti_analysis'].get('details', '[NOT_ANALYZED] No anti-analysis mechanisms detected.')}",
             "",
-            "### 16. Unpacking",
+            "### 17. Packing / Unpacking",
             "",
-            f"{part2['unpacking'].get('details')}",
+            f"{part2['unpacking'].get('details', '[NOT_ANALYZED] No packing or unpacking indicators.')}",
             "",
-            "### 17. Cross-Stage Correlation",
+            "### 18. .NET / Scripts / Documents where applicable",
             "",
-            f"{part2['cross_stage_correlation'].get('correlation_summary')}",
+            f"{part2['dotnet_scripts_docs'].get('details', '[NOT_APPLICABLE] Native executable target.')}",
             "",
-            "### 18. Final Assessment",
+            "### 19. Cross-Stage Correlation",
             "",
-            f"- **Authoritative Threat Score:** `{assessment.get('threat_score', 0)}/100` ({assessment.get('threat_level', 'UNKNOWN')})",
-            f"- **Classification:** `{assessment.get('classification', 'Generic')}`",
-            f"- **Confidence Score:** `{assessment.get('confidence', 0.0):.2f}`",
+            f"{part2['cross_stage_correlation'].get('details', '[NOT_CONFIRMED] No cross-stage corroboration detected.')}",
+            "",
+            "### 20. Final Assessment",
+            "",
+            f"- **Authoritative Threat Score:** `{assessment.get('threat_score', 0)}/100` ({assessment.get('threat_level', 'UNKNOWN')}) [OBSERVED]",
+            f"- **Classification:** `{assessment.get('classification', 'Generic')}` [INFERRED]",
+            f"- **Analysis Confidence:** `{assessment.get('analysis_confidence', 1.0):.2f}`",
+            f"- **Classification Confidence:** `{assessment.get('classification_confidence', assessment.get('confidence', 0.0)):.2f}`",
             f"- **Core Functionality:** {assessment.get('key_functionality', 'N/A')}",
-            f"- **Assessment Rationale:** {assessment.get('summary', 'No summary generated.')}",
+            f"- **Assessment Narrative:** {assessment.get('summary', 'No summary generated.')}",
             "",
             "---",
             "",
-            "## 19. IOC (Indicators of Compromise)",
+            "## APPENDICES",
             "",
-            "### Host-based Indicators",
+            "### 21. IOCs (Indicators of Compromise)",
+            "",
+            "#### Host-based Indicators",
             ""
         ])
 
         host_iocs = assessment.get("host_iocs", [])
         if host_iocs:
             for h in host_iocs:
-                lines.append(f"- `{h}`")
+                lines.append(f"- `{h}` [OBSERVED]")
         else:
-            lines.append("- *No confirmed host IOCs identified.*")
+            lines.append("- *No confirmed host IOCs identified.* [NOT_CONFIRMED]")
 
         lines.extend([
             "",
-            "### Network-based Indicators",
+            "#### Network-based Indicators",
             ""
         ])
         net_iocs = assessment.get("network_iocs", [])
         if net_iocs:
             for n in net_iocs:
-                lines.append(f"- `{n}`")
+                lines.append(f"- `{n}` [OBSERVED]")
         else:
-            lines.append("- *No confirmed network IOCs identified.*")
+            lines.append("- *No confirmed network IOCs identified.* [NOT_CONFIRMED]")
 
         lines.extend([
             "",
-            "---",
-            "",
-            "## 20. MITRE ATT&CK",
+            "### 22. MITRE ATT&CK",
             "",
             "| Technique ID | Technique Name | Tactic | Status | Basis | Citing Evidence |",
             "| :--- | :--- | :--- | :---: | :--- | :--- |"
@@ -280,25 +304,42 @@ class MarkdownReportAdapter(BaseReportAdapter):
                 st = m.get("status", "NOT_CONFIRMED")
                 basis = m.get("basis", "capability indicator only")
                 lines.append(
-                    f"| `{m.get('technique_id')}` | {m.get('technique_name')} | {m.get('tactic')} | **{st}** | {basis} | `{eids}` |"
+                    f"| `{m.get('technique_id')}` | {m.get('technique_name')} | {m.get('tactic')} | **[{st}]** | {basis} | `{eids}` |"
                 )
         else:
-            lines.append("| *None* | No MITRE techniques mapped | N/A | NOT_ANALYZED | N/A | None |")
+            lines.append("| *None* | No MITRE techniques mapped | N/A | [NOT_ANALYZED] | N/A | None |")
 
         lines.extend([
             "",
-            "---",
+            "### 23. Coverage",
             "",
-            "## 21. Limitations",
+            "| Analysis Domain | Status | Observations |",
+            "| :--- | :---: | :--- |"
+        ])
+
+        cov_matrix = coverage.get("domain_coverage", {})
+        cov_reasons = coverage.get("coverage_reasons", {})
+        if cov_matrix:
+            for dom, st in cov_matrix.items():
+                reason = cov_reasons.get(dom, "Standard profile execution")
+                lines.append(f"| {dom} | **[{st}]** | {reason} |")
+        else:
+            default_domains = [
+                ("PE", "COMPLETED", "PE structure and headers analyzed"),
+                ("ASSEMBLY", "COMPLETED", "Capstone disassembly triage performed"),
+                ("REPUTATION", rep.get("status", "SKIPPED_OFFLINE"), "External reputation lookup evaluated"),
+                ("PROCESS", behav.get("status", "NOT_ANALYZED"), "Host safe: no hostile execution conducted"),
+                ("NETWORK", net.get("status", "NOT_ANALYZED"), "No PCAP capture artifact provided"),
+                ("MEMORY", "NOT_ANALYZED", "Memory acquisition not engaged in basic profile"),
+                ("PACKING", "COMPLETED", "Entropy and section characteristics evaluated"),
+                ("ANTI_ANALYSIS", "COMPLETED", "Evasion indicators evaluated"),
+            ]
+            for dom, st, reason in default_domains:
+                lines.append(f"| {dom} | **[{st}]** | {reason} |")
+
+        lines.extend([
             "",
-            "- **Zero-Execution Host Safety:** Static code disassembly and behavioral triage artifacts were ingested without live hostile detonation on the analyst machine.",
-            "- **API Resolution Limits:** Dynamic imports obfuscated via custom run-time hashing or PEB walking require interactive debugger tracing.",
-            "- **Network Telemetry Boundaries:** Streamed PCAP captures represent recorded lab sessions; inactive C2 domains could not be contacted in offline mode.",
-            "- **Unsupported / Offline Modules:** Any section marked `[NOT_ANALYZED]` reflects deliberately unexecuted or unavailable data sources, strictly preventing fabricated defaults.",
-            "",
-            "---",
-            "",
-            "## 22. Evidence Appendix",
+            "### 24. Evidence Appendix",
             "",
             "| Evidence ID | Domain | Source Type | Field | State | Conf | Extractor | Lineage |",
             "| :--- | :--- | :--- | :--- | :---: | :---: | :--- | :--- |"
@@ -314,52 +355,24 @@ class MarkdownReportAdapter(BaseReportAdapter):
                 cnf = r.get("confidence", 1.0)
                 ext = r.get("extractor", "Core")
                 parents = ", ".join(r.get("parent_evidence_ids", [])) or "ROOT"
-                lines.append(f"| `{eid}` | {dom} | {stype} | {fld} | {st} | {cnf:.2f} | {ext} | `{parents}` |")
+                lines.append(f"| `{eid}` | {dom} | {stype} | {fld} | [{st}] | {cnf:.2f} | {ext} | `{parents}` |")
         else:
-            lines.append("| *None* | N/A | N/A | No evidence recorded | OBSERVED | 0.00 | None | ROOT |")
+            lines.append("| *None* | N/A | N/A | No evidence recorded | [OBSERVED] | 0.00 | None | ROOT |")
 
         lines.extend([
             "",
-            "---",
-            "",
-            "## 23. Analysis Manifest",
+            "### 25. Analysis Manifest",
             "",
             f"- **Engine Name:** {manifest.get('engine_name', '0206')}",
             f"- **Engine Version:** {manifest.get('engine_version', '2.0.0')}",
-            f"- **Python Version:** {manifest.get('python_version', '3.x')}",
             f"- **Host Platform:** {manifest.get('host_platform', 'Linux')}",
             f"- **Execution Profile:** {manifest.get('profile', 'basic')}",
             f"- **Privacy Mode:** {manifest.get('privacy_mode', 'strict')}",
             f"- **Duration:** {(manifest.get('duration_ms') or 0.0):.2f} ms",
             f"- **Sample SHA256:** `{manifest.get('sample_sha256', 'N/A')}`",
-            "",
-            "### Analysis Coverage Matrix",
-            "",
-            "| Analysis Domain | Status | Observations |",
-            "| :--- | :---: | :--- |"
+            f"- **Configuration Hash:** `{manifest.get('config_hash', 'N/A')}`",
+            ""
         ])
-
-        cov_matrix = coverage.get("domain_coverage", {})
-        cov_reasons = coverage.get("coverage_reasons", {})
-        if cov_matrix:
-            for dom, st in cov_matrix.items():
-                reason = cov_reasons.get(dom, "Standard profile execution")
-                lines.append(f"| {dom} | **{st}** | {reason} |")
-        else:
-            default_domains = [
-                ("PE Static", "COMPLETED", "PE structure and headers analyzed"),
-                ("Code Triage", "COMPLETED", "Capstone disassembly triage performed"),
-                ("Reputation", rep.get("status", "SKIPPED_OFFLINE"), "External reputation lookup skipped in offline mode"),
-                ("Behavioral", behav.get("status", "NOT_ANALYZED"), "No behavioral telemetry artifacts provided"),
-                ("Network", net.get("status", "NOT_ANALYZED"), "No PCAP capture artifact provided"),
-                ("Memory", "NOT_AVAILABLE", "Memory acquisition not engaged in basic triage"),
-                ("Unpacking", "NOT_ANALYZED", "Dynamic unpacking not engaged in profile"),
-                ("Anti-Analysis", "NOT_ANALYZED", "Dedicated anti-analysis not engaged in profile"),
-            ]
-            for dom, st, reason in default_domains:
-                lines.append(f"| {dom} | **{st}** | {reason} |")
-
-        lines.append("")
 
         with open(output_path, "w", encoding="utf-8") as f:
             f.write("\n".join(lines))

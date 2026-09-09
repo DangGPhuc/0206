@@ -12,7 +12,7 @@ import os
 import re
 import statistics
 from pathlib import Path
-from typing import Dict, List, Any, Optional, Tuple
+from typing import Dict, List, Any, Optional, Tuple, Union
 
 from config import (
     MAX_PCAP_SIZE, MAX_PACKETS, MAX_TRACKED_CONNECTIONS, MAX_TIMESTAMPS_PER_CONNECTION
@@ -39,6 +39,8 @@ except ImportError:
     SCAPY_AVAILABLE = False
 
 
+from analyzers.contract import AnalyzerContract, AnalysisStage, AnalyzerSafetyLevel
+
 BEACON_WEIGHTS = {
     "periodicity": 0.35,
     "destination_consistency": 0.20,
@@ -48,16 +50,58 @@ BEACON_WEIGHTS = {
 }
 
 
-class NetworkAnalyzer:
+class NetworkAnalyzer(AnalyzerContract):
     """Performs streaming PCAP telemetry extraction and multi-factor C2 beaconing analysis."""
 
-    def __init__(self, pcap_path: Path, evidence_store: Optional[EvidenceStore] = None):
-        self.pcap_path = Path(pcap_path) if pcap_path else None
+    @property
+    def name(self) -> str:
+        return "NetworkAnalyzer"
+
+    @property
+    def domains(self) -> List[AnalysisDomain]:
+        return [
+            AnalysisDomain.NETWORK,
+            AnalysisDomain.DNS,
+            AnalysisDomain.HTTP,
+            AnalysisDomain.TLS,
+            AnalysisDomain.C2,
+        ]
+
+    @property
+    def stage(self) -> AnalysisStage:
+        return AnalysisStage.BASIC_DYNAMIC
+
+    @property
+    def input_requirements(self) -> List[str]:
+        return ["pcap_path"]
+
+    @property
+    def output_evidence_types(self) -> List[str]:
+        return [
+            "PCAP_DNS",
+            "PCAP_HTTP",
+            "PCAP_TLS",
+            "PCAP_BEACON",
+            "PCAP_NETWORK"
+        ]
+
+    @property
+    def dependencies(self) -> List[str]:
+        return ["scapy"]
+
+    @property
+    def safety_level(self) -> AnalyzerSafetyLevel:
+        return AnalyzerSafetyLevel.SAFE_HOST
+
+    def __init__(self, pcap_path: Optional[Union[str, Path]] = None, evidence_store: Optional[EvidenceStore] = None):
+        self.pcap_path = Path(pcap_path) if pcap_path is not None else None
         self.evidence_store = evidence_store if evidence_store is not None else EvidenceStore()
         self.errors: List[str] = []
 
-    def analyze(self) -> Dict[str, Any]:
+    def analyze(self, pcap_path: Optional[Union[str, Path]] = None) -> Dict[str, Any]:
         """Runs memory-bounded streaming PCAP processing."""
+        if pcap_path is not None:
+            self.pcap_path = Path(pcap_path)
         if not self.pcap_path or not self.pcap_path.exists():
             return {"status": "SKIPPED", "message": "No PCAP file provided."}
 
@@ -289,3 +333,6 @@ class NetworkAnalyzer:
             "c2_beacons": beacons,
             "errors": self.errors
         }
+
+
+PCAPAnalyzer = NetworkAnalyzer

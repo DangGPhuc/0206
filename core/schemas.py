@@ -19,11 +19,12 @@ from pydantic import BaseModel, Field, ConfigDict
 # =====================================================================
 
 class AnalysisDomain(str, Enum):
-    """The 25 common malware analysis domains defined by 0206."""
+    """The 25 canonical malware analysis domains defined by 0206."""
     PE = "PE"
     LOADER = "LOADER"
     ASSEMBLY = "ASSEMBLY"
-    CODE_EXECUTION = "CODE_EXECUTION"
+    CONTROL_FLOW = "CONTROL_FLOW"
+    CODE_EXECUTION = "CODE_EXECUTION"  # Backward compatibility alias for CONTROL_FLOW
     API = "API"
     PROCESS = "PROCESS"
     THREAD = "THREAD"

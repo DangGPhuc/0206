@@ -37,13 +37,28 @@ class SandboxBackend(ABC):
         pass
 
     @abstractmethod
+    def verify_baseline(self) -> SandboxActionRecord:
+        """Verify baseline snapshot exists and guest system is clean."""
+        pass
+
+    @abstractmethod
     def snapshot(self, snapshot_name: Optional[str] = None) -> SandboxActionRecord:
-        """Take or restore a baseline snapshot before detonation."""
+        """Take or verify a baseline snapshot before detonation."""
+        pass
+
+    @abstractmethod
+    def start(self) -> SandboxActionRecord:
+        """Power on or resume the guest VM from clean snapshot."""
+        pass
+
+    @abstractmethod
+    def transfer(self, sample_path: str, target_guest_path: Optional[str] = None) -> SandboxActionRecord:
+        """Safely transfer sample binary into the isolated guest environment."""
         pass
 
     @abstractmethod
     def execute(self, sample_path: str, arguments: Optional[List[str]] = None) -> SandboxActionRecord:
-        """Transfer and execute the sample inside the isolated guest."""
+        """Execute the sample inside the isolated guest."""
         pass
 
     @abstractmethod
@@ -64,6 +79,11 @@ class SandboxBackend(ABC):
     @abstractmethod
     def revert(self, snapshot_name: Optional[str] = None) -> SandboxActionRecord:
         """Revert the guest VM back to the clean baseline state."""
+        pass
+
+    @abstractmethod
+    def verify_clean(self) -> SandboxActionRecord:
+        """Verify guest has successfully reverted to the uninfected baseline state."""
         pass
 
     @abstractmethod

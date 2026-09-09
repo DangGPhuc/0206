@@ -1,6 +1,7 @@
 """
 0206 - Part I (Basic Analysis) Report Builder
-Phase 20: Extracts and structures Part I basic triage sections from EvidenceStore and findings.
+Phase 18: Extracts and structures Part I basic triage sections (1 to 7)
+from EvidenceStore, findings, assessment, and manifest.
 """
 from typing import Dict, Any, List, Optional
 from core.schemas import AnalysisDomain, CoverageStatus
@@ -19,16 +20,29 @@ class BasicReportBuilder:
     ) -> Dict[str, Any]:
         data: Dict[str, Any] = {
             "title": "PART I — BASIC ANALYSIS",
+            "summary": {},
             "sample_identification": {},
             "reputation": {},
             "basic_static": {},
+            "static_properties": {},
             "basic_behavioral": {},
             "initial_findings": findings,
-            "preliminary_findings": findings,
+            "preliminary_findings": findings,  # backward compatibility alias
             "initial_assessment": assessment,
         }
 
-        # 1. Sample Identification
+        # 1. Summary
+        data["summary"] = {
+            "threat_score": assessment.get("threat_score", 0),
+            "threat_level": assessment.get("threat_level", "UNKNOWN"),
+            "classification": assessment.get("classification", "Generic"),
+            "summary_text": assessment.get("summary", ""),
+            "key_functionality": assessment.get("key_functionality", ""),
+            "purpose": assessment.get("purpose", "NOT_ESTABLISHED"),
+            "status": "[OBSERVED]" if assessment.get("threat_score", 0) > 0 else "[NOT_CONFIRMED]"
+        }
+
+        # 2. Identification / IOCs
         file_meta = {r.field: r.value for r in evidence_store.find(source_type="FILE_METADATA")}
         pe_header = {r.field: r.value for r in evidence_store.find(source_type="PE_HEADER")}
         data["sample_identification"] = {
@@ -44,7 +58,7 @@ class BasicReportBuilder:
             "image_base": pe_header.get("image_base", "N/A"),
         }
 
-        # 2. Reputation
+        # 3. Reputation
         rep_records = evidence_store.find(source_type="REPUTATION")
         ratio_rec = next((r for r in rep_records if r.field == "detection_ratio"), None)
         status_rec = next((r for r in rep_records if r.field == "lookup_status"), None)
@@ -86,14 +100,18 @@ class BasicReportBuilder:
                 "details": "Reputation lookup not requested or offline mode enabled."
             }
 
-        # 3. Basic Static Analysis
+        # 4. Static Properties Analysis
         sections = [r.value for r in evidence_store.find(field="section_info")]
         imports = [r.value for r in evidence_store.find(field="import")]
         exports = [r.value for r in evidence_store.find(field="export")]
-        api_hashes = [r.value for r in evidence_store.find(field="api_hash")]
-        urls = [r.value for r in evidence_store.find(field="url")]
-        ips = [r.value for r in evidence_store.find(field="ipv4")]
-        data["basic_static"] = {
+        api_hashes = [r.value for r in evidence_store.find(field="api_hash_match")]
+        urls = [r.value for r in evidence_store.find(field="embedded_url")]
+        ips = [r.value for r in evidence_store.find(field="embedded_ip")]
+        mutexes = [r.value for r in evidence_store.find(field="mutex_indicator")]
+        overlays = [r.value for r in evidence_store.find(field="pe_overlay")]
+        packers = [r.value for r in evidence_store.find(field="packer_assessment")]
+
+        static_props = {
             "status": "COMPLETED" if (sections or imports) else "NOT_ANALYZED",
             "section_count": len(sections),
             "sections": sections,
@@ -104,9 +122,14 @@ class BasicReportBuilder:
             "api_hashes": api_hashes[:10],
             "urls": urls[:20],
             "ips": ips[:20],
+            "mutexes": mutexes[:10],
+            "overlays": overlays[:2],
+            "packer_assessment": packers[0] if packers else None,
         }
+        data["basic_static"] = static_props
+        data["static_properties"] = static_props
 
-        # 4. Basic Behavioral Analysis (Artifact Ingestion Only)
+        # 5. Basic Behavioral Analysis (Artifact Ingestion Only)
         behav_proc = [r for r in evidence_store.find(source_type="PROCMON") if r.field == "process_create"]
         behav_file = [r for r in evidence_store.find(source_type="PROCMON") if "file" in r.field]
         behav_reg = [r for r in evidence_store.find(source_type="PROCMON") if "reg" in r.field]
@@ -127,7 +150,10 @@ class BasicReportBuilder:
                 "details": "No behavioral artifacts (Procmon CSV / Regshot) provided."
             }
 
-        # 5. Preliminary Findings
-        data["preliminary_findings"] = findings
+        # 6. Initial Findings
+        data["initial_findings"] = findings
+
+        # 7. Initial Assessment
+        data["initial_assessment"] = assessment
 
         return data

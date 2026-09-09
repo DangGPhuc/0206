@@ -255,6 +255,38 @@ def cmd_validate_case(case_path_str: Optional[str]):
         sys.exit(1)
 
 
+def cmd_lab(action: str = "check", output_path: Optional[str] = None, mode: str = "ISOLATED"):
+    """Manages analysis lab auditing, provisioning, and network verification."""
+    from lab.windows.detector import WindowsLabDetector
+    from lab.windows.provisioner import WindowsLabProvisioner
+    from lab.network.verifier import NetworkLabVerifier, NetworkPolicyMode
+
+    if action == "provision":
+        script = WindowsLabProvisioner.generate_powershell_script()
+        if output_path:
+            out_p = Path(output_path)
+            out_p.parent.mkdir(parents=True, exist_ok=True)
+            out_p.write_text(script, encoding="utf-8")
+            console.print(f"[bold green]✔ Provisioning script generated at:[/bold green] [cyan]{out_p.resolve()}[/cyan]")
+        else:
+            console.print(script)
+    elif action == "verify-net":
+        try:
+            pol_mode = NetworkPolicyMode(mode.upper())
+        except ValueError:
+            pol_mode = NetworkPolicyMode.ISOLATED
+        console.print(f"[*] Verifying network policy: [cyan]{pol_mode.value}[/cyan] ...")
+        res = NetworkLabVerifier.verify_network_policy(pol_mode)
+        console.print(f"  Interface: [bold]{res.interface}[/bold] (IP: {res.ip_address})")
+        console.print(f"  Gateway:   {res.default_gateway or 'None'}")
+        console.print(f"  DNS Mode:  {res.dns_mode}")
+        color = "green" if "VERIFIED" in res.verification_status else "red"
+        console.print(f"  Status:    [{color}]{res.verification_status}[/{color}] - {res.details}")
+    else:  # check
+        console.print("[*] Auditing Windows REM Lab tools & environment...")
+        run_doctor(console)
+
+
 def display_findings_table(findings: list):
     """Displays technical findings with grounded evidence IDs."""
     if not findings:
@@ -605,6 +637,12 @@ def main():
     p_val_case = subparsers.add_parser("validate-case", help="Perform comprehensive semantic validation on case directory")
     p_val_case.add_argument("case_path", type=str, help="Path to case directory to validate")
 
+    # Subcommand: lab
+    p_lab = subparsers.add_parser("lab", help="Manage and audit analysis lab workstation & network")
+    p_lab.add_argument("action", choices=["check", "provision", "verify-net"], nargs="?", default="check", help="Lab action")
+    p_lab.add_argument("--output", "-o", type=str, help="Destination file for generated provisioning script")
+    p_lab.add_argument("--mode", type=str, default="ISOLATED", choices=["ISOLATED", "HOST_ONLY", "SIMULATED_INTERNET"], help="Expected network mode")
+
     # Backward compatibility: Top-level arguments for direct `0206 --sample ...` or `0206 sample.exe`
     parser.add_argument("direct_target", nargs="?", type=str, help=argparse.SUPPRESS)
     parser.add_argument("--sample", "-s", type=str, help="Target PE binary")
@@ -668,6 +706,9 @@ def main():
         return
     elif args.subcommand == "validate-case":
         cmd_validate_case(args.case_path)
+        return
+    elif args.subcommand == "lab":
+        cmd_lab(args.action, args.output, args.mode)
         return
     elif args.subcommand == "analyze":
         sample = args.target or args.sample

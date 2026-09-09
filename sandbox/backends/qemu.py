@@ -43,9 +43,36 @@ class QemuSandboxBackend(SandboxBackend):
         self.actions.append(rec)
         return rec
 
+    def verify_baseline(self) -> SandboxActionRecord:
+        rec = SandboxActionRecord(
+            action="VERIFY_BASELINE",
+            status="SCAFFOLD" if self.is_available() else "NOT_CONFIGURED",
+            details="QEMU clean baseline verification scaffolded."
+        )
+        self.actions.append(rec)
+        return rec
+
     def snapshot(self, snapshot_name: Optional[str] = None) -> SandboxActionRecord:
         snap = snapshot_name or self.config.snapshot_name
         rec = SandboxActionRecord(action="SNAPSHOT", status="SCAFFOLD" if self.is_available() else "NOT_CONFIGURED", details=f"Referenced snapshot {snap} (automation scaffolded).")
+        self.actions.append(rec)
+        return rec
+
+    def start(self) -> SandboxActionRecord:
+        rec = SandboxActionRecord(
+            action="START",
+            status="SCAFFOLD" if self.is_available() else "NOT_CONFIGURED",
+            details="QEMU VM power on scaffolded."
+        )
+        self.actions.append(rec)
+        return rec
+
+    def transfer(self, sample_path: str, target_guest_path: Optional[str] = None) -> SandboxActionRecord:
+        rec = SandboxActionRecord(
+            action="TRANSFER",
+            status="NOT_IMPLEMENTED" if self.is_available() else "NOT_CONFIGURED",
+            details=f"File transfer of {sample_path} to QEMU guest not implemented (scaffold)."
+        )
         self.actions.append(rec)
         return rec
 
@@ -84,6 +111,15 @@ class QemuSandboxBackend(SandboxBackend):
     def revert(self, snapshot_name: Optional[str] = None) -> SandboxActionRecord:
         snap = snapshot_name or self.config.snapshot_name
         rec = SandboxActionRecord(action="REVERT", status="SCAFFOLD" if self.is_available() else "NOT_CONFIGURED", details=f"Snapshot revert scaffolded ({snap}).")
+        self.actions.append(rec)
+        return rec
+
+    def verify_clean(self) -> SandboxActionRecord:
+        rec = SandboxActionRecord(
+            action="VERIFY_CLEAN",
+            status="SCAFFOLD" if self.is_available() else "NOT_CONFIGURED",
+            details="QEMU guest clean state verification scaffolded."
+        )
         self.actions.append(rec)
         return rec
 

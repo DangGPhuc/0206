@@ -1,10 +1,13 @@
 """
-0206 - External Lab / REST Sandbox Backend
-Phase 11: Scaffolding for external automated dynamic analysis clusters (CAPE/Cuckoo/Custom Lab).
+0206 - VirtualBox Sandbox Backend
+Phase 12: Scaffolding for VirtualBox VBoxManage automation.
+Never reports SUCCESS for unconfigured or unimplemented VM operations.
 """
+import shutil
 import uuid
 from typing import Optional, List
 from datetime import datetime, timezone
+
 from sandbox.backend import SandboxBackend
 from sandbox.schema import (
     SandboxGuestConfig,
@@ -14,67 +17,67 @@ from sandbox.schema import (
 )
 
 
-class ExternalSandboxBackend(SandboxBackend):
+class VirtualBoxSandboxBackend(SandboxBackend):
     """
-    External dynamic analysis backend.
-    Communicates with dedicated lab environments or external sandboxes over a secure API.
+    VirtualBox hypervisor backend using VBoxManage CLI.
     """
 
-    def __init__(self, config: Optional[SandboxGuestConfig] = None, api_endpoint: Optional[str] = None):
+    def __init__(self, config: Optional[SandboxGuestConfig] = None, vbox_bin: Optional[str] = None):
         super().__init__(config)
-        self.api_endpoint = api_endpoint
+        self.vbox_bin = vbox_bin or shutil.which("VBoxManage") or shutil.which("vboxmanage")
         self._trace_id = str(uuid.uuid4())
 
     @property
     def name(self) -> str:
-        return "external_api"
+        return "virtualbox"
 
     def is_available(self) -> bool:
-        """Available only if an external endpoint has been configured."""
-        return bool(self.api_endpoint)
+        """Available only if VBoxManage binary is detected in PATH."""
+        return self.vbox_bin is not None
 
     def prepare(self) -> SandboxActionRecord:
-        status = "SCAFFOLD" if self.is_available() else "NOT_CONFIGURED"
-        rec = SandboxActionRecord(action="PREPARE", status=status, details=f"External endpoint: {self.api_endpoint or 'NOT_CONFIGURED'}")
+        if not self.is_available():
+            rec = SandboxActionRecord(action="PREPARE", status="NOT_CONFIGURED", details="VirtualBox VBoxManage CLI not found in PATH.")
+        else:
+            rec = SandboxActionRecord(action="PREPARE", status="SCAFFOLD", details=f"VirtualBox hypervisor {self.vbox_bin} detected. VM automation is SCAFFOLD.")
         self.actions.append(rec)
         return rec
 
     def verify_baseline(self) -> SandboxActionRecord:
         status = "SCAFFOLD" if self.is_available() else "NOT_CONFIGURED"
-        rec = SandboxActionRecord(action="VERIFY_BASELINE", status=status, details="External sandbox baseline verification scaffolded.")
+        rec = SandboxActionRecord(action="VERIFY_BASELINE", status=status, details="VirtualBox baseline snapshot verification scaffolded.")
         self.actions.append(rec)
         return rec
 
     def snapshot(self, snapshot_name: Optional[str] = None) -> SandboxActionRecord:
+        snap = snapshot_name or self.config.snapshot_name
         status = "SCAFFOLD" if self.is_available() else "NOT_CONFIGURED"
-        rec = SandboxActionRecord(action="SNAPSHOT", status=status, details="External backend remote VM snapshot management scaffolded.")
+        rec = SandboxActionRecord(action="SNAPSHOT", status=status, details=f"VirtualBox snapshot check referenced ({snap}).")
         self.actions.append(rec)
         return rec
 
     def start(self) -> SandboxActionRecord:
         status = "SCAFFOLD" if self.is_available() else "NOT_CONFIGURED"
-        rec = SandboxActionRecord(action="START", status=status, details="External sandbox start dispatch scaffolded.")
+        rec = SandboxActionRecord(action="START", status=status, details="VirtualBox VM start scaffolded.")
         self.actions.append(rec)
         return rec
 
     def transfer(self, sample_path: str, target_guest_path: Optional[str] = None) -> SandboxActionRecord:
         status = "NOT_IMPLEMENTED" if self.is_available() else "NOT_CONFIGURED"
-        rec = SandboxActionRecord(action="TRANSFER", status=status, details=f"Sample upload of {sample_path} to external sandbox blocked.")
+        rec = SandboxActionRecord(action="TRANSFER", status=status, details=f"Guest file transfer of {sample_path} via guest additions not implemented (scaffold).")
         self.actions.append(rec)
         return rec
 
     def execute(self, sample_path: str, arguments: Optional[List[str]] = None) -> SandboxActionRecord:
-        if not self.is_available():
-            rec = SandboxActionRecord(action="EXECUTE", status="NOT_CONFIGURED", details="No external sandbox endpoint configured.")
-            self.actions.append(rec)
-            return rec
-        rec = SandboxActionRecord(action="EXECUTE", status="NOT_IMPLEMENTED", details=f"Dispatch to {self.api_endpoint} is currently scaffolded. Live submission blocked.")
+        status = "NOT_IMPLEMENTED" if self.is_available() else "NOT_CONFIGURED"
+        rec = SandboxActionRecord(action="EXECUTE", status=status, details=f"VirtualBox in-guest execution for {sample_path} not implemented (scaffold). Host execution disabled.")
         self.actions.append(rec)
         return rec
 
     def monitor(self, duration_seconds: Optional[int] = None) -> SandboxActionRecord:
+        dur = duration_seconds or self.config.execution_timeout_seconds
         status = "SCAFFOLD" if self.is_available() else "NOT_CONFIGURED"
-        rec = SandboxActionRecord(action="MONITOR", status=status, details="Remote execution monitor scaffolded.")
+        rec = SandboxActionRecord(action="MONITOR", status=status, details=f"VirtualBox telemetry capture scaffolded ({dur}s).")
         self.actions.append(rec)
         return rec
 
@@ -87,28 +90,29 @@ class ExternalSandboxBackend(SandboxBackend):
             actions=list(self.actions),
             dropped_files=[],
             processes_spawned=[],
-            errors=[] if self.is_available() else ["External sandbox endpoint not configured."],
+            errors=[] if self.is_available() else ["VirtualBox VBoxManage not found on this host."],
         )
 
     def stop(self) -> SandboxActionRecord:
         status = "SCAFFOLD" if self.is_available() else "NOT_CONFIGURED"
-        rec = SandboxActionRecord(action="STOP", status=status, details="Remote job termination scaffolded.")
+        rec = SandboxActionRecord(action="STOP", status=status, details="VirtualBox VM halt scaffolded.")
         self.actions.append(rec)
         return rec
 
     def revert(self, snapshot_name: Optional[str] = None) -> SandboxActionRecord:
+        snap = snapshot_name or self.config.snapshot_name
         status = "SCAFFOLD" if self.is_available() else "NOT_CONFIGURED"
-        rec = SandboxActionRecord(action="REVERT", status=status, details="Remote snapshot restoration scaffolded.")
+        rec = SandboxActionRecord(action="REVERT", status=status, details=f"VirtualBox snapshot revert scaffolded ({snap}).")
         self.actions.append(rec)
         return rec
 
     def verify_clean(self) -> SandboxActionRecord:
         status = "SCAFFOLD" if self.is_available() else "NOT_CONFIGURED"
-        rec = SandboxActionRecord(action="VERIFY_CLEAN", status=status, details="External sandbox remote baseline verification scaffolded.")
+        rec = SandboxActionRecord(action="VERIFY_CLEAN", status=status, details="VirtualBox guest clean state verification scaffolded.")
         self.actions.append(rec)
         return rec
 
     def cleanup(self) -> SandboxActionRecord:
-        rec = SandboxActionRecord(action="CLEANUP", status="SCAFFOLD", details="External session resource cleanup scaffolded.")
+        rec = SandboxActionRecord(action="CLEANUP", status="SCAFFOLD", details="VirtualBox session handle cleanup scaffolded.")
         self.actions.append(rec)
         return rec

@@ -1,0 +1,202 @@
+# 0206 - Windows REM Workstation Declarative Lab Specification
+# FOR610-style Windows Analysis Machine Provisioning Definition
+# No proprietary binaries, cracked software, or licenses are bundled.
+
+schema_version: "2.0.0"
+lab_identity:
+  name: "0206 Windows REM Workstation"
+  description: "Automated provisioning and detection definition for local Windows malware reverse engineering lab."
+  os_target: "Windows 10 / 11 64-bit"
+
+capabilities:
+  pe_analysis:
+    description: "Header inspection, section mapping, import/export table analysis"
+    required: false
+    tools:
+      - name: "pestudio"
+        display_name: "PEStudio"
+        vendor: "Marc Ochsenmeier"
+        url: "https://www.winitor.com/"
+        default_paths:
+          - "C:\\Tools\\pestudio\\pestudio.exe"
+          - "%USERPROFILE%\\Desktop\\Tools\\pestudio\\pestudio.exe"
+        chocolatey_id: "pestudio"
+        winget_id: null
+        tier: 3
+
+      - name: "pe-bear"
+        display_name: "PE-bear"
+        vendor: "hasherezade"
+        url: "https://github.com/hasherezade/pe-bear"
+        default_paths:
+          - "C:\\Tools\\PE-bear\\PE-bear.exe"
+          - "%USERPROFILE%\\Desktop\\Tools\\PE-bear\\PE-bear.exe"
+        chocolatey_id: null
+        winget_id: null
+        tier: 2
+
+      - name: "peview"
+        display_name: "PEView"
+        vendor: "Wayne J. Radburn"
+        url: "http://wjradburn.com/software/"
+        default_paths:
+          - "C:\\Tools\\PEview\\PEview.exe"
+          - "%USERPROFILE%\\Desktop\\Tools\\PEview\\PEview.exe"
+        chocolatey_id: null
+        winget_id: null
+        tier: 2
+
+  static_triage:
+    description: "Automated capability detection, string deobfuscation, pattern matching"
+    required: false
+    tools:
+      - name: "capa"
+        display_name: "Mandiant capa"
+        vendor: "Mandiant"
+        url: "https://github.com/mandiant/capa"
+        default_paths:
+          - "C:\\Tools\\capa\\capa.exe"
+          - "%LOCALAPPDATA%\\Programs\\Python\\Python*\\Scripts\\capa.exe"
+        chocolatey_id: null
+        winget_id: null
+        tier: 2
+
+      - name: "floss"
+        display_name: "FLOSS (FLARE Obfuscated String Solver)"
+        vendor: "Mandiant"
+        url: "https://github.com/mandiant/flare-floss"
+        default_paths:
+          - "C:\\Tools\\floss\\floss.exe"
+        chocolatey_id: null
+        winget_id: null
+        tier: 2
+
+      - name: "yara"
+        display_name: "YARA"
+        vendor: "VirusTotal"
+        url: "https://github.com/VirusTotal/yara"
+        default_paths:
+          - "C:\\Tools\\yara\\yara64.exe"
+        chocolatey_id: "yara"
+        winget_id: null
+        tier: 2
+
+  process_monitoring:
+    description: "Runtime process hierarchy, thread creation, DLL loads"
+    required: true
+    tools:
+      - name: "procmon"
+        display_name: "Process Monitor (Procmon)"
+        vendor: "Microsoft Sysinternals"
+        url: "https://learn.microsoft.com/en-us/sysinternals/downloads/procmon"
+        default_paths:
+          - "C:\\Tools\\Sysinternals\\Procmon64.exe"
+          - "C:\\Tools\\Sysinternals\\Procmon.exe"
+          - "%SystemRoot%\\System32\\Procmon.exe"
+        chocolatey_id: "procmon"
+        winget_id: "Microsoft.Sysinternals.ProcessMonitor"
+        tier: 1
+
+      - name: "process_hacker"
+        display_name: "Process Hacker / System Informer"
+        vendor: "System Informer Project"
+        url: "https://systeminformer.sourceforge.io/"
+        default_paths:
+          - "C:\\Program Files\\SystemInformer\\SystemInformer.exe"
+          - "C:\\Program Files\\Process Hacker 2\\ProcessHacker.exe"
+        chocolatey_id: "processhacker"
+        winget_id: "WinsiderSeminars.SystemInformer"
+        tier: 2
+
+  filesystem_registry_monitoring:
+    description: "Filesystem drops, modifications, and registry delta tracking"
+    required: true
+    tools:
+      - name: "regshot"
+        display_name: "Regshot"
+        vendor: "Regshot Team"
+        url: "https://github.com/Seabary/Regshot"
+        default_paths:
+          - "C:\\Tools\\Regshot\\Regshot-x64-ANSI.exe"
+          - "C:\\Tools\\Regshot\\regshot.exe"
+        chocolatey_id: "regshot"
+        winget_id: null
+        tier: 2
+
+  network_capture:
+    description: "Packet capture, protocol dissection, simulated services"
+    required: true
+    tools:
+      - name: "wireshark"
+        display_name: "Wireshark"
+        vendor: "Wireshark Foundation"
+        url: "https://www.wireshark.org/"
+        default_paths:
+          - "C:\\Program Files\\Wireshark\\Wireshark.exe"
+          - "C:\\Program Files\\Wireshark\\tshark.exe"
+        chocolatey_id: "wireshark"
+        winget_id: "WiresharkFoundation.Wireshark"
+        tier: 1
+
+      - name: "inetsim"
+        display_name: "INetSim (REMnux / Linux Gateway)"
+        vendor: "INetSim Project"
+        url: "https://www.inetsim.org/"
+        default_paths:
+          - "/usr/bin/inetsim"
+        tier: 2
+
+      - name: "fakedns"
+        display_name: "FakeDNS"
+        vendor: "Crypt0s"
+        url: "https://github.com/Crypt0s/FakeDns"
+        default_paths:
+          - "fakedns.py"
+        tier: 2
+
+  disassemblers_debuggers:
+    description: "Reverse engineering, control flow disassembly, decompilation, live debugging"
+    required: false
+    tools:
+      - name: "x64dbg"
+        display_name: "x64dbg / x32dbg"
+        vendor: "x64dbg team"
+        url: "https://x64dbg.com/"
+        default_paths:
+          - "C:\\Tools\\x64dbg\\release\\x64\\x64dbg.exe"
+        chocolatey_id: "x64dbg"
+        winget_id: null
+        tier: 2
+
+      - name: "ghidra"
+        display_name: "NSA Ghidra"
+        vendor: "National Security Agency"
+        url: "https://ghidra-sre.org/"
+        default_paths:
+          - "C:\\Tools\\ghidra\\ghidraRun.bat"
+          - "/opt/ghidra/ghidraRun"
+        chocolatey_id: "ghidra"
+        winget_id: null
+        tier: 2
+
+      - name: "ida_pro"
+        display_name: "Hex-Rays IDA Pro"
+        vendor: "Hex-Rays SA"
+        url: "https://hex-rays.com/ida-pro/"
+        default_paths:
+          - "C:\\Program Files\\IDA Pro*\\ida64.exe"
+          - "/opt/idapro/ida64"
+        chocolatey_id: null
+        winget_id: null
+        tier: 3
+
+      - name: "radare2"
+        display_name: "radare2"
+        vendor: "radare project"
+        url: "https://rada.re/"
+        default_paths:
+          - "C:\\Tools\\radare2\\bin\\radare2.exe"
+          - "/usr/bin/r2"
+        chocolatey_id: "radare2"
+        winget_id: null
+        tier: 2

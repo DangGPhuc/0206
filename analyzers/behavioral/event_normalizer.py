@@ -9,7 +9,9 @@ import re
 from pathlib import Path
 from typing import Dict, List, Any, Optional
 
+from enum import Enum
 from config import MAX_LOG_ROWS
+from analyzers.contract import AnalyzerContract, AnalysisStage, AnalyzerSafetyLevel
 from core.schemas import (
     AnalysisDomain, EvidenceState, EventType,
     NormalizedEvent, ProcessEvent, FileEvent, RegistryEvent, NetworkEvent
@@ -19,11 +21,67 @@ from core.manifest import hash_file_streaming
 from analyzers.network.pcap_analyzer import NetworkAnalyzer
 
 
-class BehavioralAnalyzer:
+class BehavioralWorkflowStage(str, Enum):
+    """The canonical 10-step dynamic behavioral workflow (B0-B9)."""
+    B0_BASELINE_VERIFICATION = "B0_BASELINE_VERIFICATION"
+    B1_SNAPSHOT = "B1_SNAPSHOT"
+    B2_TELEMETRY_START = "B2_TELEMETRY_START"
+    B3_SAMPLE_EXECUTION = "B3_SAMPLE_EXECUTION"
+    B4_MONITORING = "B4_MONITORING"
+    B5_STOP = "B5_STOP"
+    B6_COLLECTION = "B6_COLLECTION"
+    B7_BASELINE_COMPARISON = "B7_BASELINE_COMPARISON"
+    B8_EVENT_NORMALIZATION = "B8_EVENT_NORMALIZATION"
+    B9_CORRELATION = "B9_CORRELATION"
+
+
+class BehavioralAnalyzer(AnalyzerContract):
     """
     Ingests and normalizes dynamic execution telemetry from multiple sources.
     Does not execute malware directly on host.
     """
+
+    @property
+    def name(self) -> str:
+        return "BehavioralAnalyzer"
+
+    @property
+    def domains(self) -> List[AnalysisDomain]:
+        return [
+            AnalysisDomain.PROCESS,
+            AnalysisDomain.THREAD,
+            AnalysisDomain.FILESYSTEM,
+            AnalysisDomain.REGISTRY,
+            AnalysisDomain.PERSISTENCE,
+            AnalysisDomain.NETWORK,
+            AnalysisDomain.API,
+        ]
+
+    @property
+    def stage(self) -> AnalysisStage:
+        return AnalysisStage.BASIC_DYNAMIC
+
+    @property
+    def input_requirements(self) -> List[str]:
+        return ["pcap_path", "procmon_path", "regshot_path", "json_path"]
+
+    @property
+    def output_evidence_types(self) -> List[str]:
+        return [
+            "PROCMON_PROCESS",
+            "PROCMON_FILE",
+            "PROCMON_REG",
+            "REGSHOT_MODIFIED",
+            "NORMALIZED_EVENT"
+        ]
+
+    @property
+    def dependencies(self) -> List[str]:
+        return ["scapy"]
+
+    @property
+    def safety_level(self) -> AnalyzerSafetyLevel:
+        return AnalyzerSafetyLevel.SAFE_HOST
 
     def __init__(
         self,
@@ -401,3 +459,6 @@ class BehavioralAnalyzer:
             self.errors.append(f"Error parsing Regshot diff: {e}")
 
         return {"keys_modified": modified_keys}
+
+
+EventNormalizer = BehavioralAnalyzer

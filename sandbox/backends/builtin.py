@@ -45,12 +45,40 @@ class BuiltinSandboxBackend(SandboxBackend):
         self.actions.append(record)
         return record
 
+    def verify_baseline(self) -> SandboxActionRecord:
+        record = SandboxActionRecord(
+            action="VERIFY_BASELINE",
+            status="SAFE_DRY_RUN",
+            details="Baseline verification checked for safe dry-run environment.",
+        )
+        self.actions.append(record)
+        return record
+
     def snapshot(self, snapshot_name: Optional[str] = None) -> SandboxActionRecord:
         snap = snapshot_name or self.config.snapshot_name
         record = SandboxActionRecord(
             action="SNAPSHOT",
             status="SAFE_DRY_RUN",
             details=f"Virtual snapshot checkpoint referenced: {snap}",
+        )
+        self.actions.append(record)
+        return record
+
+    def start(self) -> SandboxActionRecord:
+        self._is_running = True
+        record = SandboxActionRecord(
+            action="START",
+            status="SAFE_DRY_RUN",
+            details="Started safe virtual execution monitor.",
+        )
+        self.actions.append(record)
+        return record
+
+    def transfer(self, sample_path: str, target_guest_path: Optional[str] = None) -> SandboxActionRecord:
+        record = SandboxActionRecord(
+            action="TRANSFER",
+            status="SAFE_DRY_RUN",
+            details=f"Simulated staging of {sample_path} into safe guest path.",
         )
         self.actions.append(record)
         return record
@@ -105,6 +133,15 @@ class BuiltinSandboxBackend(SandboxBackend):
             action="REVERT",
             status="SAFE_DRY_RUN",
             details=f"Reverted to clean baseline: {snap}",
+        )
+        self.actions.append(record)
+        return record
+
+    def verify_clean(self) -> SandboxActionRecord:
+        record = SandboxActionRecord(
+            action="VERIFY_CLEAN",
+            status="SAFE_DRY_RUN",
+            details="Verified clean state for safe builtin backend.",
         )
         self.actions.append(record)
         return record

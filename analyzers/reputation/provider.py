@@ -41,6 +41,10 @@ class ReputationResult(BaseModel):
 class ReputationProvider(ABC):
     """Abstract interface for hash reputation lookup providers."""
 
+    @property
+    def name(self) -> str:
+        return self.__class__.__name__
+
     @abstractmethod
     def lookup_hash(self, sha256_hash: str, evidence_store: Optional[Any] = None) -> ReputationResult:
         """Looks up the sample hash without uploading sample bytes."""

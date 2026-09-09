@@ -111,8 +111,17 @@ class GenericDOCXReportAdapter(BaseReportAdapter):
         # ==========================================
         doc.add_heading("PART I — BASIC ANALYSIS", level=1)
 
-        # 1. Sample Identification
-        doc.add_heading("1. Sample Identification", level=2)
+        # 1. Summary
+        doc.add_heading("1. Summary", level=2)
+        p_summary = doc.add_paragraph()
+        p_summary.add_run(f"Threat Score: {part1['summary'].get('threat_score', 0)}/100 ({part1['summary'].get('threat_level', 'UNKNOWN')})\n")
+        p_summary.add_run(f"Classification: {part1['summary'].get('classification', 'Generic')}\n")
+        p_summary.add_run(f"Key Functionality: {part1['summary'].get('key_functionality', 'N/A')}\n")
+        p_summary.add_run(f"Suspected Purpose: {part1['summary'].get('purpose', 'N/A')}\n")
+        p_summary.add_run(f"Assessment Status: {part1['summary'].get('status', '[NOT_CONFIRMED]')}")
+
+        # 2. Identification / IOCs
+        doc.add_heading("2. Identification / IOCs", level=2)
         doc.add_paragraph(
             f"Filename: {sample_id.get('filename')}\n"
             f"SHA256: {sample_id.get('sha256')}\n"
@@ -123,9 +132,9 @@ class GenericDOCXReportAdapter(BaseReportAdapter):
             f"Entry Point RVA: {sample_id.get('entry_point')} | Image Base: {sample_id.get('image_base')}"
         )
 
-        # 2. Reputation
+        # 3. Reputation
         rep = part1["reputation"]
-        doc.add_heading("2. Reputation", level=2)
+        doc.add_heading("3. Reputation", level=2)
         rep_status = rep.get("status", "NOT_ANALYZED")
         if rep_status == "COMPLETED":
             doc.add_paragraph(
@@ -139,9 +148,9 @@ class GenericDOCXReportAdapter(BaseReportAdapter):
         else:
             doc.add_paragraph(f"[NOT_ANALYZED] {rep.get('details', 'Reputation lookup skipped or offline mode')}")
 
-        # 3. Basic Static Analysis
-        static = part1["basic_static"]
-        doc.add_heading("3. Basic Static Analysis", level=2)
+        # 4. Static Properties Analysis
+        static = part1.get("static_properties") or part1.get("basic_static", {})
+        doc.add_heading("4. Static Properties Analysis", level=2)
         if static.get("status") == "COMPLETED":
             doc.add_paragraph(
                 f"Sections Analyzed: {static.get('section_count', 0)}\n"
@@ -151,9 +160,9 @@ class GenericDOCXReportAdapter(BaseReportAdapter):
         else:
             doc.add_paragraph("[NOT_ANALYZED] No static PE structure analyzed.")
 
-        # 4. Basic Behavioral Analysis (Artifact Ingestion)
+        # 5. Basic Behavioral Analysis
         behav = part1["basic_behavioral"]
-        doc.add_heading("4. Basic Behavioral Analysis", level=2)
+        doc.add_heading("5. Basic Behavioral Analysis", level=2)
         if behav.get("status") == "COMPLETED":
             doc.add_paragraph(
                 f"Analysis Mode: {behav.get('mode', 'Artifact Ingestion')}\n"
@@ -165,8 +174,8 @@ class GenericDOCXReportAdapter(BaseReportAdapter):
         else:
             doc.add_paragraph(f"[NOT_ANALYZED] {behav.get('details', 'No behavioral artifacts provided')}")
 
-        # 5. Initial Findings
-        doc.add_heading("5. Initial Findings", level=2)
+        # 6. Initial Findings
+        doc.add_heading("6. Initial Findings", level=2)
         if findings:
             find_table = doc.add_table(rows=len(findings) + 1, cols=5)
             headers = ["Finding ID", "Status", "Domain", "Title", "Grounding Evidence"]
@@ -191,8 +200,8 @@ class GenericDOCXReportAdapter(BaseReportAdapter):
         else:
             doc.add_paragraph("[NOT_ANALYZED] No initial findings identified.")
 
-        # 6. Initial Assessment
-        doc.add_heading("6. Initial Assessment", level=2)
+        # 7. Initial Assessment
+        doc.add_heading("7. Initial Assessment", level=2)
         doc.add_paragraph(
             f"Summary: {assessment.get('summary', 'N/A')}\n"
             f"Key Functionality: {assessment.get('key_functionality', 'N/A')}\n"
@@ -204,36 +213,36 @@ class GenericDOCXReportAdapter(BaseReportAdapter):
         # ==========================================
         doc.add_heading("PART II — ADVANCED ANALYSIS", level=1)
 
-        # 7. Advanced Static Analysis
-        doc.add_heading("7. Advanced Static Analysis", level=2)
+        # 8. Advanced Static Analysis
+        doc.add_heading("8. Advanced Static Analysis", level=2)
         doc.add_paragraph(str(part2["advanced_static"].get("details", "[NOT_ANALYZED]")))
 
-        # 8. Assembly / Code Analysis
-        doc.add_heading("8. Assembly / Code Analysis", level=2)
+        # 9. Assembly / Code Analysis
+        doc.add_heading("9. Assembly / Code Analysis", level=2)
         asm = part2["assembly_code"]
         if asm.get("status") == "COMPLETED":
             doc.add_paragraph(f"Disassembled {asm.get('instruction_count')} instructions from entry point.")
         else:
             doc.add_paragraph(str(asm.get("details", "[NOT_ANALYZED]")))
 
-        # 9. API / Control Flow Analysis
-        doc.add_heading("9. API / Control Flow Analysis", level=2)
+        # 10. API / Control Flow
+        doc.add_heading("10. API / Control Flow", level=2)
         doc.add_paragraph(str(part2["api_control_flow"].get("details", "[NOT_ANALYZED]")))
 
-        # 10. Advanced Dynamic Analysis
-        doc.add_heading("10. Advanced Dynamic Analysis", level=2)
+        # 11. Advanced Behavioral Analysis
+        doc.add_heading("11. Advanced Behavioral Analysis", level=2)
         doc.add_paragraph(str(part2["advanced_dynamic"].get("details", "[NOT_ANALYZED]")))
 
-        # 11. Process / Thread Analysis
-        doc.add_heading("11. Process / Thread Analysis", level=2)
+        # 12. Process / Thread
+        doc.add_heading("12. Process / Thread", level=2)
         doc.add_paragraph(str(part2["process_thread"].get("details", "[NOT_ANALYZED]")))
 
-        # 12. Memory Analysis
-        doc.add_heading("12. Memory Analysis", level=2)
+        # 13. Memory
+        doc.add_heading("13. Memory", level=2)
         doc.add_paragraph(str(part2["memory_analysis"].get("details", "[NOT_ANALYZED]")))
 
-        # 13. Network / C2 Analysis
-        doc.add_heading("13. Network / C2 Analysis", level=2)
+        # 14. Network / C2
+        doc.add_heading("14. Network / C2", level=2)
         net = part2["network_c2"]
         if net.get("status") == "COMPLETED":
             doc.add_paragraph(
@@ -244,24 +253,28 @@ class GenericDOCXReportAdapter(BaseReportAdapter):
         else:
             doc.add_paragraph(str(net.get("details", "[NOT_ANALYZED]")))
 
-        # 14. Persistence
-        doc.add_heading("14. Persistence", level=2)
+        # 15. Persistence
+        doc.add_heading("15. Persistence", level=2)
         doc.add_paragraph(str(part2["persistence"].get("details", "[NOT_ANALYZED]")))
 
-        # 15. Anti-Analysis
-        doc.add_heading("15. Anti-Analysis", level=2)
+        # 16. Anti-Analysis
+        doc.add_heading("16. Anti-Analysis", level=2)
         doc.add_paragraph(str(part2["anti_analysis"].get("details", "[NOT_ANALYZED]")))
 
-        # 16. Unpacking
-        doc.add_heading("16. Unpacking", level=2)
+        # 17. Packing / Unpacking
+        doc.add_heading("17. Packing / Unpacking", level=2)
         doc.add_paragraph(str(part2["unpacking"].get("details", "[NOT_ANALYZED]")))
 
-        # 17. Cross-Stage Correlation
-        doc.add_heading("17. Cross-Stage Correlation", level=2)
-        doc.add_paragraph(str(part2["cross_stage_correlation"].get("correlation_summary", "[NOT_ANALYZED]")))
+        # 18. .NET / Scripts / Documents where applicable
+        doc.add_heading("18. .NET / Scripts / Documents where applicable", level=2)
+        doc.add_paragraph(str(part2["dotnet_scripts_docs"].get("details", "[NOT_APPLICABLE] Native executable target.")))
 
-        # 18. Final Assessment
-        doc.add_heading("18. Final Assessment", level=2)
+        # 19. Cross-Stage Correlation
+        doc.add_heading("19. Cross-Stage Correlation", level=2)
+        doc.add_paragraph(str(part2["cross_stage_correlation"].get("details", "[NOT_CONFIRMED] No cross-stage corroboration detected.")))
+
+        # 20. Final Assessment
+        doc.add_heading("20. Final Assessment", level=2)
         doc.add_paragraph(
             f"Authoritative Threat Score: {assessment.get('threat_score', 0)}/100 ({assessment.get('threat_level', 'UNKNOWN')})\n"
             f"Malware Family / Classification: {assessment.get('classification', 'Generic')}\n"
@@ -270,15 +283,15 @@ class GenericDOCXReportAdapter(BaseReportAdapter):
         )
 
         # ==========================================
-        # APPENDICES (Sections 19-23)
+        # APPENDICES (Sections 21-25)
         # ==========================================
-        # 19. IOC
-        doc.add_heading("19. Indicators of Compromise (IOC)", level=1)
+        # 21. Indicators of Compromise (IOC)
+        doc.add_heading("21. Indicators of Compromise (IOC)", level=1)
         doc.add_paragraph(f"Host IOCs: {', '.join(assessment.get('host_iocs', [])) or 'None'}")
         doc.add_paragraph(f"Network IOCs: {', '.join(assessment.get('network_iocs', [])) or 'None'}")
 
-        # 20. MITRE ATT&CK
-        doc.add_heading("20. MITRE ATT&CK Mapping", level=1)
+        # 22. MITRE ATT&CK
+        doc.add_heading("22. MITRE ATT&CK", level=1)
         mitre_entries = assessment.get("mitre_techniques", [])
         if mitre_entries:
             mitre_table = doc.add_table(rows=len(mitre_entries) + 1, cols=5)
@@ -302,16 +315,19 @@ class GenericDOCXReportAdapter(BaseReportAdapter):
         else:
             doc.add_paragraph("[NOT_ANALYZED] No MITRE techniques mapped.")
 
-        # 21. Limitations
-        doc.add_heading("21. Limitations & Scope", level=1)
-        doc.add_paragraph(
-            "- Zero-Execution Host Safety: Static code disassembly and behavioral triage artifacts were ingested without live hostile detonation on the analyst machine.\n"
-            "- API Resolution Limits: Dynamic imports obfuscated via custom run-time hashing or PEB walking require interactive debugger tracing.\n"
-            "- Unsupported / Offline Modules: Any section marked [NOT_ANALYZED] reflects intentionally unexecuted or unavailable data sources, strictly preventing fabricated defaults."
-        )
+        # 23. Coverage
+        doc.add_heading("23. Coverage", level=1)
+        cov_data = part2.get("coverage", {})
+        cov_ratio = cov_data.get("ratio", "N/A") if isinstance(cov_data, dict) else "N/A"
+        cov_domains = cov_data.get("domain_coverage", {}) if isinstance(cov_data, dict) else {}
+        doc.add_paragraph(f"Overall Coverage Ratio: {cov_ratio}")
+        if cov_domains:
+            cov_p = doc.add_paragraph()
+            for dom, st in list(cov_domains.items())[:12]:
+                cov_p.add_run(f"• {dom}: {st}\n")
 
-        # 22. Evidence Appendix
-        doc.add_heading("22. Evidence Appendix", level=1)
+        # 24. Evidence Appendix
+        doc.add_heading("24. Evidence Appendix", level=1)
         if evidence_records:
             ev_table = doc.add_table(rows=min(len(evidence_records), 30) + 1, cols=4)
             ev_headers = ["Evidence ID", "Domain", "Field", "State"]
@@ -332,8 +348,8 @@ class GenericDOCXReportAdapter(BaseReportAdapter):
         else:
             doc.add_paragraph("[NOT_ANALYZED] No evidence records cataloged.")
 
-        # 23. Analysis Manifest
-        doc.add_heading("23. Analysis Manifest & Provenance", level=1)
+        # 25. Analysis Manifest
+        doc.add_heading("25. Analysis Manifest", level=1)
         doc.add_paragraph(
             f"Engine: {manifest.get('engine_name', '0206')} v{manifest.get('engine_version', '2.0.0')}\n"
             f"Python Version: {manifest.get('python_version', '3.x')} | Host Platform: {manifest.get('host_platform', 'Linux')}\n"

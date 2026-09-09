@@ -21,12 +21,21 @@ class VirusTotalReputationProvider(ReputationProvider):
     Does NOT upload malware samples.
     """
 
-    def __init__(self, api_key: Optional[str] = None):
+    def __init__(self, api_key: Optional[str] = None, offline: bool = False):
         self.api_key = api_key or os.getenv("VT_API_KEY", "")
+        self.offline = offline
 
     def lookup_hash(self, sha256_hash: str, evidence_store: Optional[Any] = None) -> ReputationResult:
         """Queries VirusTotal API v3 for hash reputation."""
         clean_hash = sha256_hash.strip().lower()
+        if self.offline:
+            return ReputationResult(
+                provider="VirusTotal",
+                query_hash=clean_hash,
+                status=ReputationStatus.SKIPPED_OFFLINE,
+                details="Reputation lookup skipped in offline mode."
+            )
+
         if not clean_hash or len(clean_hash) != 64:
             res = ReputationResult(
                 provider="VirusTotal",

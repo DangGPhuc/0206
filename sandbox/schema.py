@@ -46,13 +46,30 @@ class SandboxGuestConfig(BaseModel):
         use_enum_values = True
 
 
+class SandboxLifecycleAction(str, Enum):
+    """The 12 canonical dynamic sandbox lifecycle actions (Phase 11)."""
+    PREPARE = "PREPARE"
+    VERIFY_BASELINE = "VERIFY_BASELINE"
+    SNAPSHOT = "SNAPSHOT"
+    START = "START"
+    TRANSFER = "TRANSFER"
+    EXECUTE = "EXECUTE"
+    MONITOR = "MONITOR"
+    COLLECT = "COLLECT"
+    STOP = "STOP"
+    REVERT = "REVERT"
+    VERIFY_CLEAN = "VERIFY_CLEAN"
+    CLEANUP = "CLEANUP"
+
+
 class SandboxActionRecord(BaseModel):
     """Audit record for individual sandbox lifecycle actions."""
-    action: str  # PREPARE, SNAPSHOT, EXECUTE, MONITOR, COLLECT, STOP, REVERT, CLEANUP
-    status: str  # SUCCESS, FAILED, SKIPPED
+    action: str
+    status: str  # SUCCESS, FAILED, SKIPPED, NOT_CONFIGURED, NOT_IMPLEMENTED, SCAFFOLD
     timestamp: str = Field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
     duration_ms: float = 0.0
     details: str = ""
+    errors: List[str] = Field(default_factory=list)
 
 
 class SandboxExecutionTrace(BaseModel):

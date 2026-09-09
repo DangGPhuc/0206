@@ -13,6 +13,7 @@ from rich.panel import Panel
 from rich.table import Table
 
 from integrations.registry import CapabilityRegistry
+from lab.windows.detector import WindowsLabDetector
 from config import ENGINE_NAME, ENGINE_VERSION
 
 
@@ -57,11 +58,15 @@ def run_doctor(console: Console) -> bool:
             return "[bold cyan]READY       ●[/bold cyan]"
         elif status_str == "DETECTED":
             return "[bold yellow]DETECTED    ▲[/bold yellow]"
+        elif status_str == "PARTIAL":
+            return "[yellow]PARTIAL     ~[/yellow]"
+        elif status_str == "NOT_CONFIGURED":
+            return "[dim yellow]NOT_CONFIGURED[/dim yellow]"
         elif status_str == "NOT_SUPPORTED":
             return "[dim]NOT_SUPPORTED[/dim]"
         elif status_str == "FAILED":
             return "[bold red]FAILED      ✗[/bold red]"
-        return "[dim yellow]NOT_INSTALLED[/dim yellow]"
+        return "[dim]NOT_INSTALLED[/dim]"
 
     # Optional Tier 2 Table
     opt_table = Table(title="⚙️ OPTIONAL Tier 2 Open-Source Analyzers (Enhancement Only)", show_header=True, header_style="bold yellow")
@@ -109,6 +114,28 @@ def run_doctor(console: Console) -> bool:
     console.print(prop_table)
     console.print("")
 
+    # Lab Workstation Capabilities (Windows REM / SANS FOR610 Spec)
+    lab_audit = WindowsLabDetector.audit()
+    lab_table = Table(title="🔬 LAB WORKSTATION Capabilities (Windows REM / SANS FOR610 Spec)", show_header=True, header_style="bold blue")
+    lab_table.add_column("Tool", style="bold white", width=16)
+    lab_table.add_column("Category", style="cyan", width=20)
+    lab_table.add_column("Status", width=16)
+    lab_table.add_column("Version", style="italic green", width=10)
+    lab_table.add_column("Diagnostics & Capabilities", style="dim")
+
+    lab_detected_count = 0
+    for audit_item in lab_audit:
+        if audit_item.status in ("FUNCTIONAL", "READY", "DETECTED", "PARTIAL"):
+            lab_detected_count += 1
+        st_disp = format_status(audit_item.status)
+        ver_disp = audit_item.version or "-"
+        caps_summary = ", ".join(audit_item.capabilities[:2])
+        diag_disp = f"{audit_item.details} ({caps_summary})" if caps_summary else audit_item.details
+        lab_table.add_row(audit_item.display_name, audit_item.category, st_disp, ver_disp, diag_disp)
+
+    console.print(lab_table)
+    console.print("")
+
     # Summary Panel
     status_label = "[bold green]CORE READY[/bold green]" if all_core_ok else "[bold red]CORE INCOMPLETE (Install missing core packages)[/bold red]"
     border_col = "green" if all_core_ok else "red"
@@ -116,7 +143,8 @@ def run_doctor(console: Console) -> bool:
     summary = (
         f"[bold white]STATUS:[/bold white] {status_label}\n"
         f"  • [cyan]OPTIONAL ANALYZERS:[/cyan]    {tier2_functional}/{len(tier2_tools)} active/ready\n"
-        f"  • [cyan]PROPRIETARY ANALYZERS:[/cyan] {tier3_functional}/{len(tier3_tools)} active/ready\n\n"
+        f"  • [cyan]PROPRIETARY ANALYZERS:[/cyan] {tier3_functional}/{len(tier3_tools)} active/ready\n"
+        f"  • [cyan]LAB WORKSTATION TOOLS:[/cyan] {lab_detected_count}/{len(lab_audit)} available in current environment\n\n"
         f"[dim]Environment Specs:[/dim]\n"
         f"  • Python: {sys.version.split()[0]} | Platform: {platform.system()} ({platform.machine()})\n"
         f"  • Privacy Mode: strict (default) | Default AI: offline (deterministic)\n"

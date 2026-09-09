@@ -3,21 +3,52 @@
 Evaluates samples for embedded macros, OLE streams, PDF exploits, and script tags.
 """
 from pathlib import Path
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, List, Union
+from analyzers.contract import AnalyzerContract, AnalysisStage, AnalyzerSafetyLevel
 from core.schemas import AnalysisDomain
 from core.evidence import EvidenceStore
 from core.manifest import hash_file_streaming
 
 
-class DocumentAnalyzer:
+class DocumentAnalyzer(AnalyzerContract):
     """Triage for weaponized office documents, PDFs, and script payloads."""
 
-    def __init__(self, file_path: Path, evidence_store: Optional[EvidenceStore] = None):
-        self.file_path = Path(file_path)
+    @property
+    def name(self) -> str:
+        return "DocumentAnalyzer"
+
+    @property
+    def domains(self) -> List[AnalysisDomain]:
+        return [AnalysisDomain.DOCUMENT, AnalysisDomain.SCRIPT]
+
+    @property
+    def stage(self) -> AnalysisStage:
+        return AnalysisStage.ADVANCED_STATIC
+
+    @property
+    def input_requirements(self) -> List[str]:
+        return ["sample_path"]
+
+    @property
+    def output_evidence_types(self) -> List[str]:
+        return ["FILE_IDENTIFICATION"]
+
+    @property
+    def dependencies(self) -> List[str]:
+        return []
+
+    @property
+    def safety_level(self) -> AnalyzerSafetyLevel:
+        return AnalyzerSafetyLevel.SAFE_HOST
+
+    def __init__(self, file_path: Optional[Union[str, Path]] = None, evidence_store: Optional[EvidenceStore] = None):
+        self.file_path = Path(file_path) if file_path is not None else None
         self.evidence_store = evidence_store if evidence_store is not None else EvidenceStore()
 
-    def analyze(self) -> Dict[str, Any]:
-        if not self.file_path.exists():
+    def analyze(self, file_path: Optional[Union[str, Path]] = None) -> Dict[str, Any]:
+        if file_path is not None:
+            self.file_path = Path(file_path)
+        if self.file_path is None or not self.file_path.exists():
             return {"status": "SKIPPED", "is_document": False}
 
         hashes = hash_file_streaming(self.file_path)

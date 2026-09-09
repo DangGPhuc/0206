@@ -20,6 +20,8 @@ Responsibilities:
 import os
 import time
 import json
+import hashlib
+from datetime import datetime, timezone
 from pathlib import Path
 from dataclasses import dataclass, field
 from typing import Optional, List, Dict, Any, Callable
@@ -225,9 +227,10 @@ class AnalysisOrchestrator:
         sample_sha256 = manifest.sample_hashes.get("sha256", "")
         if p_sample and sample_sha256:
             notify("Checking hash reputation (VirusTotal hash lookup only)...", 3)
-            t0 = time.perf_counter()
             rep_stage = ReputationStage(offline=offline or portable)
-            rep_stage.analyze(sample_sha256, evidence_store=evidence_store, artifact_name=p_sample.name)
+            t0 = time.perf_counter()
+            rep_res = rep_stage.analyze(sample_sha256, evidence_store=evidence_store, artifact_name=p_sample.name)
+            manifest.reputation = rep_res.model_dump()
             manifest.record_timing("ReputationStage", (time.perf_counter() - t0) * 1000.0)
             manifest.analyzers_enabled.append("ReputationStage")
         else:
@@ -387,6 +390,18 @@ class AnalysisOrchestrator:
             privacy_mode=privacy_mode
         )
         assessment = synthesizer.synthesize(evidence_store, validated_findings, base_assessment=assessment)
+        manifest.ai_metadata = {
+            "provider": llm_provider,
+            "model": model,
+            "prompt_version": "1.0.0",
+            "analysis_timestamp": datetime.now(timezone.utc).isoformat(),
+            "privacy_mode": privacy_mode,
+            "remote_mode": "remote" if is_remote else "local",
+            "validation_status": getattr(assessment, "validation_status", "VALIDATED")
+        }
+        manifest.configuration_hash = hashlib.sha256(
+            f"{profile}:{privacy_mode}:{offline}:{adaptive}:{portable}".encode("utf-8")
+        ).hexdigest()[:16]
 
         # -------------------------------------------------------------
         # 10. MULTI-FORMAT DELIVERABLE GENERATION
@@ -449,13 +464,56 @@ class AnalysisOrchestrator:
         }
         sanitized_payload = privacy_redactor.redact(session_payload)
 
+        # -------------------------------------------------------------
+        # Phase 20: Case Bundle Layout (CASE-ID/ structure)
+        # -------------------------------------------------------------
+        dir_input = out_dir / "input"
+        dir_reputation = out_dir / "reputation"
+        dir_basic = out_dir / "basic"
+        dir_advanced = out_dir / "advanced"
+        dir_evidence = out_dir / "evidence"
+        dir_report = out_dir / "report"
+        dir_manifest = out_dir / "manifest"
+
+        for d in (dir_input, dir_reputation, dir_basic, dir_advanced, dir_evidence, dir_report, dir_manifest):
+            d.mkdir(parents=True, exist_ok=True)
+
+        # Save input metadata (do NOT copy original sample binary unless requested)
+        input_meta_file = dir_input / "input_metadata.json"
+        with open(input_meta_file, "w", encoding="utf-8") as f:
+            f.write(json.dumps(manifest.artifacts, indent=2))
+
+        # Save reputation raw stage output
+        rep_file = dir_reputation / "reputation.json"
+        with open(rep_file, "w", encoding="utf-8") as f:
+            f.write(json.dumps(manifest.reputation or {}, indent=2))
+
+        # Save basic triage summary
+        basic_file = dir_basic / "basic_triage.json"
+        with open(basic_file, "w", encoding="utf-8") as f:
+            f.write(json.dumps({
+                "static": static_data.get("file_info", {}),
+                "sections_count": len(static_data.get("sections", [])),
+                "imports_count": len(static_data.get("imports", {}))
+            }, indent=2))
+
+        # Save advanced triage summary
+        adv_file = dir_advanced / "advanced_triage.json"
+        with open(adv_file, "w", encoding="utf-8") as f:
+            f.write(json.dumps({
+                "code_analysis": code_data,
+                "behavioral_events": len(behavioral_data.get("normalized_events", []))
+            }, indent=2))
+
         # 1. JSON Report
         report_json_path = out_dir / "report.json"
         JSONReportAdapter().render(sanitized_payload, report_json_path)
+        JSONReportAdapter().render(sanitized_payload, dir_report / "report.json")
 
         # 2. Markdown Report
         report_md_path = out_dir / "report.md"
         MarkdownReportAdapter().render(sanitized_payload, report_md_path)
+        MarkdownReportAdapter().render(sanitized_payload, dir_report / "report.md")
 
         # 3. DOCX Report (Generic built-in or user-provided template adapter)
         report_docx_path = out_dir / "report.docx"
@@ -474,43 +532,60 @@ class AnalysisOrchestrator:
             manifest.template_name = "generic_builtin"
 
         docx_adapter.render(sanitized_payload, report_docx_path)
+        docx_adapter.render(sanitized_payload, dir_report / "report.docx")
 
         # 4. Evidence Store JSON export - Privacy-Safe by default (Phase 4)
         evidence_json_path = out_dir / "evidence.json"
         sanitized_evidence_records = privacy_redactor.redact(evidence_store.to_dict())
+        evidence_json_text = json.dumps(sanitized_evidence_records, indent=2)
         with open(evidence_json_path, "w", encoding="utf-8") as f:
-            f.write(json.dumps(sanitized_evidence_records, indent=2))
+            f.write(evidence_json_text)
+        with open(dir_evidence / "evidence.json", "w", encoding="utf-8") as f:
+            f.write(evidence_json_text)
 
         # 5. Findings JSON export - Privacy-Safe by default (Phase 4)
         findings_json_path = out_dir / "findings.json"
         sanitized_findings_records = privacy_redactor.redact([f.model_dump() for f in validated_findings])
+        findings_json_text = json.dumps(sanitized_findings_records, indent=2)
         with open(findings_json_path, "w", encoding="utf-8") as f:
-            f.write(json.dumps(sanitized_findings_records, indent=2))
+            f.write(findings_json_text)
+        with open(dir_report / "findings.json", "w", encoding="utf-8") as f:
+            f.write(findings_json_text)
 
         # 6. Assessment JSON export - Privacy-Safe by default (Phase 4)
         assessment_json_path = out_dir / "assessment.json"
         sanitized_assessment_record = privacy_redactor.redact(assessment.model_dump())
+        assessment_json_text = json.dumps(sanitized_assessment_record, indent=2)
         with open(assessment_json_path, "w", encoding="utf-8") as f:
-            f.write(json.dumps(sanitized_assessment_record, indent=2))
+            f.write(assessment_json_text)
+        with open(dir_report / "assessment.json", "w", encoding="utf-8") as f:
+            f.write(assessment_json_text)
 
         # 7. IOCs JSON export - Privacy-Safe by default (Phase 4)
         iocs_json_path = out_dir / "iocs.json"
         sanitized_iocs = privacy_redactor.redact({"host_iocs": assessment.host_iocs, "network_iocs": assessment.network_iocs})
+        iocs_json_text = json.dumps(sanitized_iocs, indent=2)
         with open(iocs_json_path, "w", encoding="utf-8") as f:
-            f.write(json.dumps(sanitized_iocs, indent=2))
+            f.write(iocs_json_text)
+        with open(dir_report / "iocs.json", "w", encoding="utf-8") as f:
+            f.write(iocs_json_text)
 
         # 8. Coverage JSON export
         coverage_json_path = out_dir / "coverage.json"
+        cov = getattr(assessment, "coverage", None)
+        cov_dict = cov.model_dump() if hasattr(cov, "model_dump") else (cov if isinstance(cov, dict) else {})
+        cov_json_text = json.dumps(cov_dict, indent=2)
         with open(coverage_json_path, "w", encoding="utf-8") as f:
-            cov = getattr(assessment, "coverage", None)
-            cov_dict = cov.model_dump() if hasattr(cov, "model_dump") else (cov if isinstance(cov, dict) else {})
-            f.write(json.dumps(cov_dict, indent=2))
+            f.write(cov_json_text)
+        with open(dir_report / "coverage.json", "w", encoding="utf-8") as f:
+            f.write(cov_json_text)
 
         # Opt-in Raw Evidence Export (Phase 4)
         raw_evidence_json_path = None
         if export_raw_evidence:
             raw_evidence_json_path = out_dir / "evidence.raw.json"
             evidence_store.export(raw_evidence_json_path)
+            evidence_store.export(dir_evidence / "evidence.raw.json")
             manifest.record_output_artifact("evidence.raw.json", raw_evidence_json_path)
 
         # 9. Ensure artifacts and figures directories exist
@@ -537,6 +612,7 @@ class AnalysisOrchestrator:
 
         manifest.complete()
         companion_sha256_path = manifest.export_json(manifest_json_path)
+        manifest.export_json(dir_manifest / "analysis_manifest.json")
 
         notify("Triage pipeline complete!", 14)
 

@@ -4,9 +4,9 @@ Delegates to the modular report adapters in the `report/` package.
 """
 from pathlib import Path
 from typing import Dict, Any, Optional
-from report.adapters.sans_style_adapter import SANSStyleReportAdapter
-from report.adapters.generic_docx_adapter import GenericDOCXReportAdapter
-from report.template_validator import TemplateValidator
+from reporting.adapters.sans_style_adapter import SANSStyleReportAdapter
+from reporting.adapters.generic_docx_adapter import GenericDOCXReportAdapter
+from reporting.validators import TemplateValidator
 
 
 class FOR610ReportGenerator:
