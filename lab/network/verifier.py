@@ -32,7 +32,7 @@ class NetworkLabAuditRecord(BaseModel):
     default_gateway: Optional[str] = None
     dns_servers: List[str] = Field(default_factory=list)
     dns_mode: str = "STANDARD"  # STANDARD, FAKEDNS, INETSIM, BLOCKED
-    firewall_state: str = "ACTIVE"
+    firewall_state: str = "UNVERIFIED"
     egress_verified: bool = False
     verification_status: str = "VERIFIED_ISOLATED"  # VERIFIED_ISOLATED, LEAK_DETECTED, VERIFIED_SIMULATED, UNVERIFIED
     details: str = ""
@@ -53,10 +53,24 @@ class NetworkLabVerifier:
         """
         gateway = None
         dns_servers = []
-        interface_name = "lo" if platform.system() != "Windows" else "Loopback"
-        ip_addr = "127.0.0.1"
+        interface_name = "unknown"
+        ip_addr = None
 
-        # 1. Inspect default route / gateway
+        # 1. Inspect default route / gateway and interface without claiming 'lo' for external IP
+        if platform.system() == "Linux" and os.path.exists("/proc/net/route"):
+            try:
+                with open("/proc/net/route", "r") as f:
+                    for line in f.readlines()[1:]:
+                        parts = line.strip().split()
+                        if len(parts) >= 3 and parts[1] == "00000000":
+                            interface_name = parts[0]
+                            gw_hex = parts[2]
+                            if len(gw_hex) == 8:
+                                gateway = socket.inet_ntoa(bytes.fromhex(gw_hex)[::-1])
+                            break
+            except Exception:
+                pass
+
         try:
             # Safe probe without external handshake
             s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -67,6 +81,16 @@ class NetworkLabVerifier:
             s.close()
         except Exception:
             pass
+
+        # Ensure truthful metadata:
+        # Do not report interface="lo" when the detected IP belongs to another interface.
+        # If the actual interface cannot be determined reliably, use "unknown".
+        if interface_name in ("lo", "Loopback") and ip_addr and not ip_addr.startswith("127."):
+            interface_name = "unknown"
+        elif interface_name == "unknown" and ip_addr and ip_addr.startswith("127."):
+            interface_name = "lo" if platform.system() != "Windows" else "Loopback"
+        elif not interface_name:
+            interface_name = "unknown"
 
         # 2. Check resolv.conf or system DNS mode on Linux
         dns_mode = "STANDARD"
@@ -81,8 +105,17 @@ class NetworkLabVerifier:
             except Exception:
                 pass
 
-        if any(d in ("127.0.0.1", "127.0.0.53") for d in dns_servers):
-            dns_mode = "LOCAL_SIMULATED"
+        # 127.0.0.1 / 127.0.0.53 are local stub/systemd resolvers, NOT proof of FakeDNS/INetSim.
+        # dns_mode must remain one of: STANDARD, FAKEDNS, INETSIM, BLOCKED.
+        # Keep dns_mode="STANDARD" unless a simulated DNS service is explicitly and verifiably identified.
+        if simulated_services:
+            norm_services = [str(s).strip().upper() for s in simulated_services]
+            if any("FAKEDNS" in s for s in norm_services):
+                dns_mode = "FAKEDNS"
+            elif any("INETSIM" in s for s in norm_services):
+                dns_mode = "INETSIM"
+            elif any("BLOCK" in s for s in norm_services):
+                dns_mode = "BLOCKED"
 
         # 3. Test egress reachability to detect leaks
         egress_possible = False
@@ -118,7 +151,7 @@ class NetworkLabVerifier:
             default_gateway=gateway,
             dns_servers=dns_servers[:4],
             dns_mode=dns_mode,
-            firewall_state="CONFIGURED",
+            firewall_state="UNVERIFIED",
             egress_verified=egress_possible,
             verification_status=v_status,
             details=details
