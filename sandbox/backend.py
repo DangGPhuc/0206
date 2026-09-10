@@ -1,7 +1,9 @@
 """
 0206 - Sandbox Backend Abstract Interface
 Phase 11: Standardized sandbox backend interface.
-Every backend must implement prepare, snapshot, execute, monitor, collect, stop, revert, cleanup.
+Every backend must define lifecycle gates: prepare, verify_vm, verify_baseline,
+restore_baseline, verify_network, start, verify_guest_control, start_telemetry,
+transfer, execute, monitor, stop_telemetry, collect, stop, revert, verify_clean, cleanup.
 """
 from abc import ABC, abstractmethod
 from typing import Optional, Dict, Any, List
@@ -10,6 +12,7 @@ from sandbox.schema import (
     SandboxActionRecord,
     SandboxExecutionTrace,
     SandboxStatus,
+    ActionStatus,
 )
 
 
@@ -23,7 +26,7 @@ class SandboxBackend(ABC):
     @property
     @abstractmethod
     def name(self) -> str:
-        """Backend name (e.g. 'builtin', 'qemu', 'external')."""
+        """Backend name (e.g. 'builtin', 'virtualbox', 'qemu', 'external')."""
         pass
 
     @abstractmethod
@@ -36,20 +39,51 @@ class SandboxBackend(ABC):
         """Prepare VM environment or verify base requirements."""
         pass
 
+    def verify_vm(self) -> SandboxActionRecord:
+        """Verify the configured VM exists and is registered."""
+        rec = SandboxActionRecord(action="VERIFY_VM", status=ActionStatus.NOT_IMPLEMENTED.value, details="verify_vm not implemented for this backend.")
+        self.actions.append(rec)
+        return rec
+
     @abstractmethod
     def verify_baseline(self) -> SandboxActionRecord:
         """Verify baseline snapshot exists and guest system is clean."""
         pass
 
-    @abstractmethod
+    def restore_baseline(self, snapshot_name: Optional[str] = None) -> SandboxActionRecord:
+        """Restore baseline snapshot prior to starting VM."""
+        rec = SandboxActionRecord(action="RESTORE_BASELINE", status=ActionStatus.NOT_IMPLEMENTED.value, details="restore_baseline not implemented for this backend.")
+        self.actions.append(rec)
+        return rec
+
+    def verify_network(self) -> SandboxActionRecord:
+        """Inspect actual hypervisor network configuration for safe isolation."""
+        rec = SandboxActionRecord(action="VERIFY_NETWORK", status=ActionStatus.NOT_IMPLEMENTED.value, details="verify_network not implemented for this backend.")
+        self.actions.append(rec)
+        return rec
+
     def snapshot(self, snapshot_name: Optional[str] = None) -> SandboxActionRecord:
         """Take or verify a baseline snapshot before detonation."""
-        pass
+        rec = SandboxActionRecord(action="SNAPSHOT", status=ActionStatus.NOT_IMPLEMENTED.value, details="snapshot not implemented for this backend.")
+        self.actions.append(rec)
+        return rec
 
     @abstractmethod
     def start(self) -> SandboxActionRecord:
         """Power on or resume the guest VM from clean snapshot."""
         pass
+
+    def verify_guest_control(self) -> SandboxActionRecord:
+        """Verify guest control subsystem / guest additions are responsive."""
+        rec = SandboxActionRecord(action="VERIFY_GUEST_CONTROL", status=ActionStatus.NOT_IMPLEMENTED.value, details="verify_guest_control not implemented for this backend.")
+        self.actions.append(rec)
+        return rec
+
+    def start_telemetry(self) -> SandboxActionRecord:
+        """Initiate monitoring tools (Procmon, tshark, Regshot) inside guest."""
+        rec = SandboxActionRecord(action="START_TELEMETRY", status=ActionStatus.NOT_IMPLEMENTED.value, details="start_telemetry not implemented for this backend.")
+        self.actions.append(rec)
+        return rec
 
     @abstractmethod
     def transfer(self, sample_path: str, target_guest_path: Optional[str] = None) -> SandboxActionRecord:
@@ -65,6 +99,12 @@ class SandboxBackend(ABC):
     def monitor(self, duration_seconds: Optional[int] = None) -> SandboxActionRecord:
         """Monitor guest telemetry (processes, network, registry, filesystem)."""
         pass
+
+    def stop_telemetry(self) -> SandboxActionRecord:
+        """Halt in-guest telemetry collectors and flush logs to disk."""
+        rec = SandboxActionRecord(action="STOP_TELEMETRY", status=ActionStatus.NOT_IMPLEMENTED.value, details="stop_telemetry not implemented for this backend.")
+        self.actions.append(rec)
+        return rec
 
     @abstractmethod
     def collect(self, output_dir: str) -> SandboxExecutionTrace:

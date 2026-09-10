@@ -40,6 +40,7 @@ from core.manifest import hash_file_streaming
 from core.doctor import run_doctor
 from core.selftest import run_selftest
 from reporting.validators import TemplateValidator
+from sandbox.doctor import run_sandbox_doctor
 
 console = Console()
 
@@ -417,12 +418,14 @@ def run_analyze_cli(
     privacy_mode_str: str = "strict",
     offline_mode: bool = False,
     api_key: Optional[str] = None,
-    model: str = "gpt-4o",
+    model: Optional[str] = None,
     yara_rules: Optional[str] = None,
     backend: str = "memory",
     adaptive: bool = False,
     portable: bool = False,
     export_raw_evidence: bool = False,
+    detonate: bool = False,
+    sandbox_backend: Optional[str] = None,
     quiet: bool = False,
     json_output: bool = False,
     no_color: bool = False
@@ -452,7 +455,9 @@ def run_analyze_cli(
                 adaptive=adaptive,
                 portable=portable,
                 export_raw_evidence=export_raw_evidence,
-                step_callback=None
+                step_callback=None,
+                detonate=detonate,
+                sandbox_backend=sandbox_backend
             )
         except Exception as e:
             if json_output:
@@ -504,7 +509,9 @@ def run_analyze_cli(
                 adaptive=adaptive,
                 portable=portable,
                 export_raw_evidence=export_raw_evidence,
-                step_callback=step_callback
+                step_callback=step_callback,
+                detonate=detonate,
+                sandbox_backend=sandbox_backend
             )
             progress.update(task, completed=14, description="[bold green]Analysis Complete!")
         except Exception as e:
@@ -604,9 +611,12 @@ def main():
     p_analyze.add_argument("--adaptive", action="store_true", help="Adaptive mode: dynamically detect environment and run available tools")
     p_analyze.add_argument("--portable", action="store_true", help="Portable mode: offline, zero proprietary tools, sanitized local paths")
     p_analyze.add_argument("--yara-rules", type=str, help="Path to custom YARA rules file (.yar/.yara)")
-    p_analyze.add_argument("--backend", type=str, choices=["memory", "sqlite"], default="memory", help="Evidence Store backend storage")
+    p_analyze.add_argument("--evidence-backend", type=str, choices=["memory", "sqlite"], default=None, help="Evidence Store backend storage (memory, sqlite)")
+    p_analyze.add_argument("--backend", type=str, choices=["memory", "sqlite"], default=None, help="[DEPRECATED] Alias for --evidence-backend")
+    p_analyze.add_argument("--detonate", action="store_true", default=False, help="Request live sample execution inside configured sandbox VM")
+    p_analyze.add_argument("--sandbox", type=str, choices=["virtualbox", "qemu", "vmware", "external", "builtin", "builtin_safe"], default="virtualbox", help="Sandbox backend for live detonation (default: virtualbox)")
     p_analyze.add_argument("--api-key", type=str, help="[DEPRECATED] API key for remote LLM provider. Prefer OPENAI_API_KEY / ANTHROPIC_API_KEY env vars.")
-    p_analyze.add_argument("--model", type=str, default="gpt-4o", help="LLM model name")
+    p_analyze.add_argument("--model", type=str, default=None, help="LLM model name (defaults to provider specific default)")
     p_analyze.add_argument("--export-raw-evidence", action="store_true", help="Export unredacted raw internal evidence to evidence.raw.json")
     p_analyze.add_argument("--quiet", "-q", action="store_true", help="Quiet output (suppress banner, progress bars, non-critical logs)")
     p_analyze.add_argument("--json", action="store_true", help="Emit report results as JSON to stdout")
@@ -614,6 +624,11 @@ def main():
 
     # Subcommand: doctor
     subparsers.add_parser("doctor", help="Run capability diagnostics and dependency check")
+
+    # Subcommand: sandbox
+    p_sandbox = subparsers.add_parser("sandbox", help="Manage and audit dynamic detonation sandbox environments")
+    p_sandbox.add_argument("action", choices=["doctor"], nargs="?", default="doctor", help="Sandbox action (default: doctor)")
+    p_sandbox.add_argument("--backend", type=str, default="virtualbox", choices=["virtualbox", "qemu", "vmware", "external", "builtin", "builtin_safe"], help="Sandbox hypervisor backend")
 
     # Subcommand: capabilities
     subparsers.add_parser("capabilities", help="List detected Tier 1, 2, and 3 capabilities")
@@ -658,9 +673,12 @@ def main():
     parser.add_argument("--adaptive", action="store_true", help="Adaptive mode: dynamically detect environment and run available tools")
     parser.add_argument("--portable", action="store_true", help="Portable mode: offline, zero proprietary tools, sanitized local paths")
     parser.add_argument("--yara-rules", type=str, help="Path to custom YARA rules file (.yar/.yara)")
-    parser.add_argument("--backend", type=str, choices=["memory", "sqlite"], default="memory", help="Evidence Store backend storage")
+    parser.add_argument("--evidence-backend", type=str, choices=["memory", "sqlite"], default=None, help="Evidence Store backend storage")
+    parser.add_argument("--backend", type=str, choices=["memory", "sqlite"], default=None, help="[DEPRECATED] Alias for --evidence-backend")
+    parser.add_argument("--detonate", action="store_true", default=False, help="Request live sample execution inside configured sandbox VM")
+    parser.add_argument("--sandbox", type=str, choices=["virtualbox", "qemu", "vmware", "external", "builtin", "builtin_safe"], default="virtualbox", help="Sandbox backend for live detonation")
     parser.add_argument("--api-key", type=str, help="[DEPRECATED] API key for remote LLM provider. Prefer OPENAI_API_KEY / ANTHROPIC_API_KEY env vars.")
-    parser.add_argument("--model", type=str, default="gpt-4o")
+    parser.add_argument("--model", type=str, default=None)
     parser.add_argument("--export-raw-evidence", action="store_true", help="Export unredacted raw internal evidence to evidence.raw.json")
     parser.add_argument("--quiet", "-q", action="store_true", help="Quiet output")
     parser.add_argument("--json", action="store_true", help="Emit report results as JSON to stdout")
@@ -710,8 +728,18 @@ def main():
     elif args.subcommand == "lab":
         cmd_lab(args.action, args.output, args.mode)
         return
+    elif args.subcommand == "sandbox":
+        action = getattr(args, "action", "doctor")
+        if action == "doctor":
+            success = run_sandbox_doctor(console, backend_name=args.backend)
+            if not success:
+                sys.exit(1)
+            return
     elif args.subcommand == "analyze":
         sample = args.target or args.sample
+        ev_backend = getattr(args, "evidence_backend", None) or getattr(args, "backend", None) or "memory"
+        if getattr(args, "backend", None) and not is_quiet_or_json:
+            console.print("[yellow][!] Warning: '--backend' is deprecated; prefer '--evidence-backend'.[/yellow]")
         run_analyze_cli(
             sample_path=sample,
             pcap_path=args.pcap,
@@ -725,10 +753,12 @@ def main():
             api_key=args.api_key,
             model=args.model,
             yara_rules=args.yara_rules,
-            backend=args.backend,
+            backend=ev_backend,
             adaptive=args.adaptive,
             portable=args.portable,
             export_raw_evidence=args.export_raw_evidence,
+            detonate=getattr(args, "detonate", False),
+            sandbox_backend=getattr(args, "sandbox", "virtualbox"),
             quiet=args.quiet,
             json_output=args.json,
             no_color=args.no_color
@@ -741,6 +771,7 @@ def main():
         out_dir = args.output_dir or args.output
         if out_dir and out_dir.endswith(".docx"):
             out_dir = str(Path(out_dir).parent)
+        ev_backend = getattr(args, "evidence_backend", None) or getattr(args, "backend", None) or "memory"
         run_analyze_cli(
             sample_path=sample,
             pcap_path=args.pcap,
@@ -754,10 +785,12 @@ def main():
             api_key=args.api_key,
             model=args.model,
             yara_rules=args.yara_rules,
-            backend=args.backend,
+            backend=ev_backend,
             adaptive=args.adaptive,
             portable=args.portable,
             export_raw_evidence=args.export_raw_evidence,
+            detonate=getattr(args, "detonate", False),
+            sandbox_backend=getattr(args, "sandbox", "virtualbox"),
             quiet=args.quiet,
             json_output=args.json,
             no_color=args.no_color

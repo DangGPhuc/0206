@@ -20,6 +20,7 @@ Responsibilities:
 import os
 import time
 import json
+import shutil
 import hashlib
 from datetime import datetime, timezone
 from pathlib import Path
@@ -36,7 +37,7 @@ from core.resource_policy import ResourcePolicy
 from core.profiles import ProfileName, get_profile
 from core.evidence import EvidenceStore
 from core.findings import FindingEngine, Finding, Assessment
-from core.schemas import TransmissionMode
+from core.schemas import TransmissionMode, AnalysisDomain
 from core.manifest import AnalysisManifest
 from core.privacy import PrivacyMode, PrivacyRedactor, BLOCK_REMOTE_TRANSMISSION, DLPStatus
 from core.atomic_io import atomic_write_json, atomic_write_text, set_posix_permissions
@@ -49,6 +50,8 @@ from analyzers.behavioral.event_normalizer import BehavioralAnalyzer
 from analyzers.code.capstone_triage import CodeAnalyzer
 from ai.agent import LLMThreatSynthesizer
 from integrations.adapters import ADAPTER_REGISTRY
+from sandbox.schema import SandboxGuestConfig, SandboxExecutionTrace, SandboxNetworkState
+from sandbox.controller import SandboxController
 
 from reporting.adapters.json_adapter import JSONReportAdapter
 from reporting.adapters.markdown_adapter import MarkdownReportAdapter
@@ -77,6 +80,7 @@ class OrchestrationResult:
     iocs_json: Optional[Path] = None
     coverage_json: Optional[Path] = None
     evidence_raw_json: Optional[Path] = None
+    sandbox_trace: Optional[SandboxExecutionTrace] = None
     warnings: List[str] = field(default_factory=list)
 
 
@@ -103,14 +107,17 @@ class AnalysisOrchestrator:
         privacy_mode: str = "strict",
         offline: bool = False,
         api_key: Optional[str] = None,
-        model: str = "gpt-4o",
+        model: Optional[str] = None,
         template_path: Optional[str | Path] = None,
         yara_rules: Optional[str | Path] = None,
         backend: str = "memory",
         adaptive: bool = False,
         portable: bool = False,
         export_raw_evidence: bool = False,
-        step_callback: Optional[Callable[[str, int], None]] = None
+        step_callback: Optional[Callable[[str, int], None]] = None,
+        detonate: bool = False,
+        sandbox_backend: Optional[str] = None,
+        sandbox_config: Optional[SandboxGuestConfig] = None
     ) -> OrchestrationResult:
         """
         Executes the end-to-end analysis pipeline.
@@ -128,6 +135,9 @@ class AnalysisOrchestrator:
         p_procmon = Path(procmon_path) if procmon_path else None
         p_regshot = Path(regshot_path) if regshot_path else None
         p_yara_rules = Path(yara_rules) if yara_rules else None
+
+        if detonate and not p_sample:
+            raise ValueError("Live detonation requested (--detonate) but no sample PE binary was provided.")
 
         if not p_sample and not p_pcap and not p_procmon and not p_regshot:
             raise ValueError("At least one input artifact (--sample, --pcap, or --procmon) is required.")
@@ -185,7 +195,9 @@ class AnalysisOrchestrator:
                 "portable": portable,
                 "backend": backend,
                 "yara_rules": sanitize_path(p_yara_rules),
-                "export_raw_evidence": export_raw_evidence
+                "export_raw_evidence": export_raw_evidence,
+                "detonate": detonate,
+                "sandbox_backend": sandbox_backend
             }
         )
         manifest.warnings.extend(warnings)
@@ -271,7 +283,103 @@ class AnalysisOrchestrator:
         else:
             manifest.analyzers_skipped.extend(["PEStaticAnalyzer", "CodeAnalyzer"])
 
-        # 4b. Behavioral Telemetry (PCAP, Procmon, Regshot)
+        # 4b. Live Sandbox Detonation (Fail-Closed SandboxController)
+        sandbox_trace: Optional[SandboxExecutionTrace] = None
+        if detonate and p_sample:
+            notify("Executing fail-closed live sandbox detonation...", 5)
+            s_backend_type = sandbox_backend or "virtualbox"
+            controller = SandboxController(config=sandbox_config, backend_type=s_backend_type)
+            dir_sandbox_temp = out_dir / "sandbox"
+            dir_sandbox_temp.mkdir(parents=True, exist_ok=True)
+            t0 = time.perf_counter()
+            sandbox_trace = controller.run_safe_session(str(p_sample), str(dir_sandbox_temp))
+            manifest.record_timing("SandboxController", (time.perf_counter() - t0) * 1000.0)
+            manifest.sandbox_provider = sandbox_trace.backend_name
+            manifest.network_mode = sandbox_trace.network_verification_status
+            manifest.snapshot_identifier = sandbox_trace.snapshot_name
+
+            if sandbox_trace.errors:
+                manifest.errors.extend(sandbox_trace.errors)
+            if sandbox_trace.warnings:
+                manifest.warnings.extend(sandbox_trace.warnings)
+
+            # Record sandbox provenance EvidenceRecords into EvidenceStore (non-malicious facts)
+            evidence_store.create(
+                source_artifact="sandbox",
+                source_type="SANDBOX_PROVENANCE",
+                field="backend",
+                value=sandbox_trace.backend_name,
+                extractor="SandboxController",
+                confidence=1.0,
+                domain=AnalysisDomain.PROCESS
+            )
+            evidence_store.create(
+                source_artifact="sandbox",
+                source_type="SANDBOX_PROVENANCE",
+                field="vm_name",
+                value=sandbox_trace.vm_name,
+                extractor="SandboxController",
+                confidence=1.0,
+                domain=AnalysisDomain.PROCESS
+            )
+            evidence_store.create(
+                source_artifact="sandbox",
+                source_type="SANDBOX_PROVENANCE",
+                field="snapshot_name",
+                value=sandbox_trace.snapshot_name,
+                extractor="SandboxController",
+                confidence=1.0,
+                domain=AnalysisDomain.PROCESS
+            )
+            evidence_store.create(
+                source_artifact="sandbox",
+                source_type="SANDBOX_PROVENANCE",
+                field="verified_network_mode",
+                value=sandbox_trace.network_verification_status,
+                extractor="SandboxController",
+                confidence=1.0,
+                domain=AnalysisDomain.NETWORK
+            )
+            evidence_store.create(
+                source_artifact="sandbox",
+                source_type="SANDBOX_PROVENANCE",
+                field="trace_id",
+                value=sandbox_trace.trace_id,
+                extractor="SandboxController",
+                confidence=1.0,
+                domain=AnalysisDomain.PROCESS
+            )
+            evidence_store.create(
+                source_artifact="sandbox",
+                source_type="SANDBOX_PROVENANCE",
+                field="execution_duration",
+                value=sandbox_trace.execution_duration,
+                extractor="SandboxController",
+                confidence=1.0,
+                domain=AnalysisDomain.PROCESS
+            )
+            evidence_store.create(
+                source_artifact="sandbox",
+                source_type="SANDBOX_PROVENANCE",
+                field="telemetry_artifact_hashes",
+                value=sandbox_trace.telemetry_hashes,
+                extractor="SandboxController",
+                confidence=1.0,
+                domain=AnalysisDomain.PROCESS
+            )
+
+            # Automatically map collected sandbox telemetry into BehavioralAnalyzer
+            if sandbox_trace.pcap_path and Path(sandbox_trace.pcap_path).exists():
+                p_pcap = Path(sandbox_trace.pcap_path)
+                manifest.record_artifact("pcap", p_pcap)
+            if sandbox_trace.procmon_csv_path and Path(sandbox_trace.procmon_csv_path).exists():
+                p_procmon = Path(sandbox_trace.procmon_csv_path)
+                manifest.record_artifact("procmon", p_procmon)
+            if sandbox_trace.regshot_path and Path(sandbox_trace.regshot_path).exists():
+                p_regshot = Path(sandbox_trace.regshot_path)
+                manifest.record_artifact("regshot", p_regshot)
+
+        # 4c. Behavioral Telemetry (PCAP, Procmon, Regshot)
         if prof_cfg.enable_behavioral and (p_pcap or p_procmon or p_regshot):
             notify("Ingesting behavioral telemetry (PCAP streaming & Procmon logs)...", 5)
             t0 = time.perf_counter()
@@ -369,27 +477,6 @@ class AnalysisOrchestrator:
                 llm_provider = "ollama"
                 transmission_mode = TransmissionMode.LOCAL_SERVICE
 
-        if transmission_mode == TransmissionMode.REMOTE_SERVICE:
-            evidence_summary = evidence_store.to_dict()
-            sanitized_evidence = privacy_redactor.redact(evidence_summary[:50])
-            sanitized_findings = privacy_redactor.redact([f.model_dump() for f in validated_findings])
-            transmission_payload = {
-                "provider": llm_provider,
-                "model": model,
-                "evidence": sanitized_evidence,
-                "findings": sanitized_findings
-            }
-
-            audit_res = privacy_redactor.audit_for_transmission(transmission_payload)
-            if not audit_res.is_safe or audit_res.status == DLPStatus.BLOCKED:
-                manifest.warnings.append(
-                    f"{BLOCK_REMOTE_TRANSMISSION}: Sensitive telemetry detected ({'; '.join(audit_res.violations)}). "
-                    f"Blocked remote transmission; fallback to offline AI."
-                )
-                llm_provider = "offline"
-                transmission_mode = TransmissionMode.OFFLINE
-                effective_key = None
-
         manifest.ai_mode = llm_provider
 
         # -------------------------------------------------------------
@@ -404,13 +491,17 @@ class AnalysisOrchestrator:
         )
         assessment = synthesizer.synthesize(evidence_store, validated_findings, base_assessment=assessment)
         manifest.ai_metadata = {
-            "provider": llm_provider,
-            "model": model,
+            "provider": synthesizer.provider,
+            "model": synthesizer.model,
             "prompt_version": "1.0.0",
             "analysis_timestamp": datetime.now(timezone.utc).isoformat(),
             "privacy_mode": privacy_mode,
             "remote_mode": transmission_mode.value,
             "validation_status": getattr(assessment, "validation_status", "VALIDATED")
+        }
+        manifest.synthesizer = {
+            "model": synthesizer.model,
+            "provider": synthesizer.provider
         }
 
         manifest.configuration_hash = hashlib.sha256(
@@ -477,6 +568,20 @@ class AnalysisOrchestrator:
             "evidence_records": evidence_store.to_dict(),
             "evidence_appendix": evidence_appendix,
             "coverage": assessment.coverage,
+            "sandbox": {
+                "backend": sandbox_trace.backend_name if sandbox_trace else "NOT_USED",
+                "execution_status": sandbox_trace.execution_status if sandbox_trace else "NOT_ANALYZED",
+                "network_verification": sandbox_trace.network_verification_status if sandbox_trace else "UNVERIFIED",
+                "snapshot_name": sandbox_trace.snapshot_name if sandbox_trace else "N/A",
+                "revert_status": sandbox_trace.revert_status if sandbox_trace else "NOT_ANALYZED",
+                "telemetry_available": {
+                    "pcap": bool(sandbox_trace and sandbox_trace.pcap_path),
+                    "procmon": bool(sandbox_trace and sandbox_trace.procmon_csv_path),
+                    "regshot": bool(sandbox_trace and sandbox_trace.regshot_path)
+                } if sandbox_trace else {},
+                "execution_duration": sandbox_trace.execution_duration if sandbox_trace else 0.0,
+                "limitations": (sandbox_trace.warnings + sandbox_trace.errors) if sandbox_trace else []
+            },
             "raw_telemetry": {
                 "static": safe_static_data,
                 "code_analysis": safe_code_data,
@@ -495,10 +600,54 @@ class AnalysisOrchestrator:
         dir_evidence = out_dir / "evidence"
         dir_report = out_dir / "report"
         dir_manifest = out_dir / "manifest"
+        dir_sandbox = out_dir / "sandbox"
 
         for d in (dir_input, dir_reputation, dir_basic, dir_advanced, dir_evidence, dir_report, dir_manifest):
             d.mkdir(parents=True, exist_ok=True)
             set_posix_permissions(d, 0o700)
+
+        # Save sandbox artifacts in case/sandbox/ (Phase 11)
+        if sandbox_trace:
+            dir_sandbox.mkdir(parents=True, exist_ok=True)
+            set_posix_permissions(dir_sandbox, 0o700)
+            safe_sandbox_trace = privacy_redactor.redact(sandbox_trace.model_dump())
+            trace_file = dir_sandbox / "sandbox_trace.json"
+            atomic_write_json(trace_file, safe_sandbox_trace)
+            set_posix_permissions(trace_file, 0o600)
+            manifest.record_output_artifact("sandbox/sandbox_trace.json", trace_file)
+            manifest.sandbox_trace_hash = manifest.output_lineage.get("sandbox/sandbox_trace.json", {}).get("sha256")
+
+            if sandbox_trace.execution_metadata_path and Path(sandbox_trace.execution_metadata_path).exists():
+                meta_src = Path(sandbox_trace.execution_metadata_path)
+                meta_dst = dir_sandbox / "execution_metadata.json"
+                if meta_src.resolve() != meta_dst.resolve():
+                    shutil.copy2(meta_src, meta_dst)
+                set_posix_permissions(meta_dst, 0o600)
+                manifest.record_output_artifact("sandbox/execution_metadata.json", meta_dst)
+
+            if sandbox_trace.procmon_csv_path and Path(sandbox_trace.procmon_csv_path).exists():
+                p_src = Path(sandbox_trace.procmon_csv_path)
+                p_dst = dir_sandbox / "procmon.csv"
+                if p_src.resolve() != p_dst.resolve():
+                    shutil.copy2(p_src, p_dst)
+                set_posix_permissions(p_dst, 0o600)
+                manifest.record_output_artifact("sandbox/procmon.csv", p_dst)
+
+            if sandbox_trace.pcap_path and Path(sandbox_trace.pcap_path).exists():
+                p_src = Path(sandbox_trace.pcap_path)
+                p_dst = dir_sandbox / "network.pcap"
+                if p_src.resolve() != p_dst.resolve():
+                    shutil.copy2(p_src, p_dst)
+                set_posix_permissions(p_dst, 0o600)
+                manifest.record_output_artifact("sandbox/network.pcap", p_dst)
+
+            if sandbox_trace.regshot_path and Path(sandbox_trace.regshot_path).exists():
+                r_src = Path(sandbox_trace.regshot_path)
+                r_dst = dir_sandbox / "regshot.txt"
+                if r_src.resolve() != r_dst.resolve():
+                    shutil.copy2(r_src, r_dst)
+                set_posix_permissions(r_dst, 0o600)
+                manifest.record_output_artifact("sandbox/regshot.txt", r_dst)
 
         # Save input metadata (do NOT copy original sample binary unless requested)
         input_meta_file = dir_input / "input_metadata.json"
@@ -653,6 +802,7 @@ class AnalysisOrchestrator:
             iocs_json=iocs_json_path,
             coverage_json=coverage_json_path,
             evidence_raw_json=raw_evidence_json_path,
+            sandbox_trace=sandbox_trace,
             warnings=manifest.warnings
         )
 

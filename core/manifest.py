@@ -88,11 +88,13 @@ class AnalysisManifest(BaseModel):
     # Operational Modes
     ai_mode: str = "offline"
     ai_metadata: Dict[str, Any] = Field(default_factory=dict)
+    synthesizer: Dict[str, Any] = Field(default_factory=dict)
     privacy_mode: str = "strict"
     profile: str = "standard"
     sandbox_provider: Optional[str] = "NOT_USED"
     network_mode: Optional[str] = "UNVERIFIED"
     snapshot_identifier: Optional[str] = None
+    sandbox_trace_hash: Optional[str] = None
     configuration_hash: Optional[str] = None
     reputation: Dict[str, Any] = Field(default_factory=dict)
     template_name: Optional[str] = None

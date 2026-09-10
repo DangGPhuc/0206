@@ -132,6 +132,20 @@ class MarkdownReportAdapter(BaseReportAdapter):
             "",
         ])
 
+        sbox = session_data.get("sandbox", {})
+        if sbox.get("backend") and sbox.get("backend") != "NOT_USED":
+            lines.extend([
+                f"- **Sandbox Backend:** `{sbox.get('backend')}` [OBSERVED]",
+                f"- **Execution Status:** `[{sbox.get('execution_status', 'NOT_ANALYZED')}]`",
+                f"- **Network Verification:** `[{sbox.get('network_verification', 'UNVERIFIED')}]`",
+                f"- **Snapshot / Revert Status:** `[{sbox.get('revert_status', 'NOT_ANALYZED')}]` (Baseline: `{sbox.get('snapshot_name', 'N/A')}`)",
+                f"- **Execution Duration:** `{sbox.get('execution_duration', 0.0)}s`",
+            ])
+            lims = sbox.get("limitations", [])
+            if lims:
+                lines.append(f"- **Sandbox Limitations / Warnings:** {'; '.join(lims)}")
+            lines.append("")
+
         if behav.get("status") == "COMPLETED":
             lines.extend([
                 f"- **Analysis Mode:** `{behav.get('mode', 'Artifact Ingestion')}` [OBSERVED]",

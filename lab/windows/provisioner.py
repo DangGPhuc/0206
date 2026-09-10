@@ -57,10 +57,12 @@ if (-not (Get-Command choco -ErrorAction SilentlyContinue)) {{
 Write-Host "[*] Installing Forensic Tools via Chocolatey..." -ForegroundColor Yellow
 choco install -y {choco_list}
 
-# 3. Create Tools Workspace Directory
-$ToolsDir = "C:\\Tools"
-if (-not (Test-Path $ToolsDir)) {{
-    New-Item -Path $ToolsDir -ItemType Directory -Force | Out-Null
+# 3. Create Standard 0206 & Tools Workspace Directories
+$Dirs = @("C:\\Tools", "C:\\0206\\tools", "C:\\0206\\work", "C:\\0206\\telemetry", "C:\\0206\\scripts")
+foreach ($d in $Dirs) {{
+    if (-not (Test-Path $d)) {{
+        New-Item -Path $d -ItemType Directory -Force | Out-Null
+    }}
 }}
 
 # 4. Disable Windows Defender real-time monitoring inside isolated VM

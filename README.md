@@ -75,8 +75,8 @@ Every capability in 0206 is explicitly classified by its actual implementation s
 | **Ghidra Adapter** | `PARTIAL` | Capability detection and optional headless script invocation if installed |
 | **Capa / Radare2 / FLOSS** | `PARTIAL` | External tool wrapper invoking local CLI if detected in PATH |
 | **IDA Pro Adapter** | `STUB` | Normalization contract ready; requires user-provided IDA Pro license |
-| **x64dbg / WinDbg Adapters** | `STUB` | Normalization contract ready; requires Windows host environment |
-| **Live Hostile Detonation Sandbox** | `NOT_IMPLEMENTED` | Analyst safety: live hostile detonation on workstation is not supported; lab layer orchestrates external VMs |
+| **Live Detonation Sandbox (VirtualBox)** | `FUNCTIONAL` | Fail-closed Windows VM orchestration via VBoxManage, default-deny network verification, in-guest Procmon/PCAP/Regshot telemetry, and baseline snapshot restoration |
+| **Live Detonation Sandbox (QEMU / VMware / External)** | `SCAFFOLD` | Standardized interface and schemas defined; hypervisor automation is scaffolded |
 
 ---
 
@@ -264,9 +264,52 @@ Supported AI Providers:
 # 11. Validate a custom DOCX report template
 0206 validate-template template.docx
 
-# 12. Inspect an audit manifest
-0206 manifest output/analysis_manifest.json
+# 13. Check sandbox readiness (never executes samples)
+0206 sandbox doctor --backend virtualbox
+
+# 14. Analyze with automated live sandbox detonation
+0206 analyze sample.exe --detonate --sandbox virtualbox --offline
 ```
+
+---
+
+## 🧪 Live Detonation Workflow (VirtualBox)
+
+0206 provides a fail-closed, live execution sandbox backend for Windows analysis VMs managed via VirtualBox (`VBoxManage`). Live detonation executes suspicious PEs **only** inside the guest VM and collects in-guest telemetry (Procmon, PCAP, Regshot) into normalized `EvidenceRecord`s.
+
+> [!IMPORTANT]
+> **Safety Notice:** This repository does **not** include a Windows VM image and does **not** include malware samples. Users must provide their own licensed Windows analysis VM and configure it safely.
+
+### Realistic End-to-End Setup:
+
+```bash
+# 1. Clone and install
+git clone https://github.com/DangGPhuc/0206
+cd 0206
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -e .
+
+# 2. Verify base dependencies
+0206 doctor
+
+# 3. Provision analysis lab layout (optional helper)
+0206 lab provision --target-dir ~/analysis_lab
+
+# 4. Configure your Windows Analysis VM in VirtualBox:
+#    - VM Name: win10_analysis (or configure via 0206.toml / environment variables)
+#    - Network: Host-only or Internal Network (Default-Deny: NAT and Bridged are blocked)
+#    - Guest harness: Ensure C:\0206\tools, work, telemetry, scripts exist
+#    - Take a clean baseline snapshot: clean_triage_base
+
+# 5. Verify sandbox readiness (read-only preflight; never executes a sample):
+0206 sandbox doctor --backend virtualbox
+
+# 6. Execute fail-closed detonation analysis:
+export SANDBOX_GUEST_PASSWORD="YourGuestPassword"
+0206 analyze sample.exe --detonate --sandbox virtualbox --offline
+```
+
 
 ---
 
