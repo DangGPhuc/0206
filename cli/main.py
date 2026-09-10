@@ -356,13 +356,67 @@ def cmd_sandbox_smoke_test(backend_name: str = "virtualbox", config: Optional[Sa
         controller = SandboxController(config=cfg, backend_instance=vbox)
         trace = controller.run_safe_session(str(fixture_path), str(out_dir / "sandbox"))
 
-        if trace.status not in (SandboxStatus.COMPLETED, SandboxStatus.PARTIAL) or trace.revert_status != ActionStatus.VERIFIED.value:
-            console.print(f"[bold red]Smoke test failed: {trace.errors}[/bold red]")
+        # Strict smoke test validation:
+        # - session status == COMPLETED
+        # - execution launch verified
+        # - all REQUIRED telemetry acquired
+        # - revert == VERIFIED
+        # - verify_clean == VERIFIED
+        # - no safety gate errors
+        exec_action = next((a for a in trace.actions if a.action == "EXECUTE"), None)
+        exec_verified = bool(exec_action is not None and exec_action.is_success())
+        revert_verified = bool(
+            trace.revert_status == ActionStatus.VERIFIED.value
+            and any(a.action == "REVERT" and a.is_success() for a in trace.actions)
+        )
+        clean_verified = any(a.action == "VERIFY_CLEAN" and a.is_success() for a in trace.actions)
+
+        req_telemetry_ok = True
+        missing_required = []
+        if cfg.require_procmon:
+            if not (trace.procmon_csv_path and Path(trace.procmon_csv_path).exists()):
+                req_telemetry_ok = False
+                missing_required.append("Procmon")
+        if cfg.require_pcap:
+            if not (trace.pcap_path and Path(trace.pcap_path).exists()):
+                req_telemetry_ok = False
+                missing_required.append("PCAP")
+        if cfg.require_regshot:
+            if not (trace.regshot_path and Path(trace.regshot_path).exists()):
+                req_telemetry_ok = False
+                missing_required.append("Regshot")
+
+        no_gate_errors = (len(trace.errors) == 0)
+
+        is_passed = (
+            trace.status == SandboxStatus.COMPLETED
+            and exec_verified
+            and req_telemetry_ok
+            and revert_verified
+            and clean_verified
+            and no_gate_errors
+        )
+
+        if is_passed:
+            console.print("[bold green]✔ Live VM smoke test completed successfully![/bold green]")
+            console.print("[bold green]REAL_VM_SMOKE_TEST=PASSED[/bold green]")
+        elif trace.status == SandboxStatus.PARTIAL or (exec_verified and (revert_verified or clean_verified)):
+            reasons = []
+            if trace.status != SandboxStatus.COMPLETED:
+                reasons.append(f"status: {trace.status}")
+            if not req_telemetry_ok:
+                reasons.append(f"missing required telemetry: {', '.join(missing_required)}")
+            if trace.warnings:
+                reasons.append(f"warnings: {'; '.join(trace.warnings)}")
+            if trace.errors:
+                reasons.append(f"errors: {'; '.join(trace.errors)}")
+            console.print(f"[bold yellow]▲ Live VM smoke test completed with partial results: {'; '.join(reasons)}[/bold yellow]")
+            console.print("[bold yellow]REAL_VM_SMOKE_TEST=PARTIAL[/bold yellow]")
+            sys.exit(1)
+        else:
+            console.print(f"[bold red]✗ Live VM smoke test failed: {trace.errors}[/bold red]")
             console.print("[bold red]REAL_VM_SMOKE_TEST=FAILED[/bold red]")
             sys.exit(1)
-
-        console.print("[bold green]✔ Live VM smoke test completed successfully![/bold green]")
-        console.print("[bold green]REAL_VM_SMOKE_TEST=PASSED[/bold green]")
 
 
 def resolve_sandbox_config(args) -> SandboxGuestConfig:

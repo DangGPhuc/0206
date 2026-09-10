@@ -192,8 +192,9 @@ class VirtualBoxSandboxBackend(SandboxBackend):
             # Ensure C:\0206\scripts exists in guest
             self._run_vbox([
                 "guestcontrol", self.config.vm_name,
+                "run",
                 *auth_args,
-                "run", "--exe", r"C:\Windows\System32\cmd.exe",
+                "--exe", r"C:\Windows\System32\cmd.exe",
                 "--wait-stdout", "--", "/c", r"if not exist C:\0206\scripts mkdir C:\0206\scripts"
             ], timeout=20)
 
@@ -202,8 +203,8 @@ class VirtualBoxSandboxBackend(SandboxBackend):
                 if host_p.exists():
                     res = self._run_vbox([
                         "guestcontrol", self.config.vm_name,
-                        *auth_args,
                         "copyto",
+                        *auth_args,
                         "--target-directory", r"C:\0206\scripts",
                         str(host_p.resolve())
                     ], timeout=30)
@@ -222,8 +223,9 @@ class VirtualBoxSandboxBackend(SandboxBackend):
             guest_script = f"{self.guest_scripts_dir}\\{script_name}"
             cmd = [
                 "guestcontrol", self.config.vm_name,
+                "run",
                 *auth_args,
-                "run", "--exe", r"C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe",
+                "--exe", r"C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe",
                 "--wait-stdout", "--wait-exit",
                 "--",
                 "-NoProfile", "-ExecutionPolicy", "Bypass",
@@ -301,7 +303,7 @@ class VirtualBoxSandboxBackend(SandboxBackend):
         found = False
         found_uuid = None
 
-        # Parse snapshot tree
+        # 1. Parse snapshot tree from machine-readable key-values
         parsed_kv = self._parse_machinereadable(res.stdout)
         for k, v in parsed_kv.items():
             if v == snap_target and k.startswith("SnapshotName"):
@@ -311,22 +313,28 @@ class VirtualBoxSandboxBackend(SandboxBackend):
                 found_uuid = parsed_kv.get(uuid_key)
                 break
 
-        # Fallback check if line contains snapshot name
-        if not found:
+        # 2. Check standard text lines for Name and UUID
+        if not found or not found_uuid:
+            import re
             for line in res.stdout.splitlines():
-                if f'"{snap_target}"' in line or f'={snap_target}' in line:
+                m = re.search(r'Name:\s*["\']?' + re.escape(snap_target) + r'["\']?\s*\(UUID:\s*([0-9a-fA-F-]+)\)', line)
+                if m:
                     found = True
+                    found_uuid = m.group(1).strip()
                     break
 
         if not found:
             err = f"Baseline snapshot '{snap_target}' not found on VM '{self.config.vm_name}'."
             rec = SandboxActionRecord(action="VERIFY_BASELINE", status=ActionStatus.FAILED.value, details=err, errors=[err])
+        elif not found_uuid or not str(found_uuid).strip():
+            err = f"Baseline snapshot '{snap_target}' found on VM '{self.config.vm_name}', but SnapshotUUID is missing. Snapshot UUID is mandatory."
+            rec = SandboxActionRecord(action="VERIFY_BASELINE", status=ActionStatus.FAILED.value, details=err, errors=[err])
         else:
-            self._baseline_snapshot_uuid = found_uuid
+            self._baseline_snapshot_uuid = str(found_uuid).strip()
             rec = SandboxActionRecord(
                 action="VERIFY_BASELINE",
                 status=ActionStatus.VERIFIED.value,
-                details=f"Baseline snapshot '{snap_target}' verified (UUID: {found_uuid or 'N/A'})."
+                details=f"Baseline snapshot '{snap_target}' verified (UUID: {self._baseline_snapshot_uuid})."
             )
         self.actions.append(rec)
         return rec
@@ -457,8 +465,9 @@ class VirtualBoxSandboxBackend(SandboxBackend):
         with self._guest_auth_args() as auth_args:
             res = self._run_vbox([
                 "guestcontrol", self.config.vm_name,
+                "run",
                 *auth_args,
-                "run", "--exe", r"C:\Windows\System32\cmd.exe",
+                "--exe", r"C:\Windows\System32\cmd.exe",
                 "--wait-stdout", "--", "/c", "echo", "0206_READY"
             ], timeout=30)
 
@@ -492,29 +501,42 @@ class VirtualBoxSandboxBackend(SandboxBackend):
             self.actions.append(rec)
             return rec
 
-        # Parse JSON output from preflight.ps1
+        # Parse JSON output from preflight.ps1 - MUST FAIL CLOSED if malformed, missing, or not READY
         try:
             pf_json = json.loads(pf_res.stdout.strip())
-            net_info = pf_json.get("network", {})
-            if net_info.get("egress_detected", False) and net_mode_str in ("ISOLATED", "HOST_ONLY"):
-                self._network_state = SandboxNetworkState.LEAK_DETECTED
-                err = "LEAK_DETECTED: In-guest negative probe connected to external internet endpoint."
+            if not isinstance(pf_json, dict):
+                raise ValueError("Preflight report is not a JSON object")
+        except Exception as ex:
+            err = f"Failed to parse guest preflight JSON report: {ex} (output: {pf_res.stdout[:200]})."
+            rec = SandboxActionRecord(action="VERIFY_GUEST_CONTROL", status=ActionStatus.FAILED.value, details=err, errors=[err])
+            self.actions.append(rec)
+            return rec
+
+        if pf_json.get("status") != "READY":
+            err = f"Guest preflight returned status '{pf_json.get('status')}' (expected 'READY'): {pf_json.get('errors', [])}."
+            rec = SandboxActionRecord(action="VERIFY_GUEST_CONTROL", status=ActionStatus.FAILED.value, details=err, errors=[err])
+            self.actions.append(rec)
+            return rec
+
+        self._preflight_data = pf_json
+
+        net_info = pf_json.get("network", {})
+        if net_info.get("egress_detected", False) and net_mode_str in ("ISOLATED", "HOST_ONLY"):
+            self._network_state = SandboxNetworkState.LEAK_DETECTED
+            err = "LEAK_DETECTED: In-guest negative probe connected to external internet endpoint."
+            rec = SandboxActionRecord(action="VERIFY_GUEST_CONTROL", status=ActionStatus.FAILED.value, details=err, errors=[err])
+            self.actions.append(rec)
+            return rec
+
+        if net_mode_str == SandboxNetworkMode.SIMULATED_INTERNET:
+            if net_info.get("simulated_services_verified", False):
+                self._network_state = SandboxNetworkState.VERIFIED_SIMULATED
+            else:
+                self._network_state = SandboxNetworkState.UNVERIFIED
+                err = "SIMULATED_UNVERIFIED: In-guest positive verification of simulated services failed."
                 rec = SandboxActionRecord(action="VERIFY_GUEST_CONTROL", status=ActionStatus.FAILED.value, details=err, errors=[err])
                 self.actions.append(rec)
                 return rec
-
-            if net_mode_str == SandboxNetworkMode.SIMULATED_INTERNET:
-                if net_info.get("simulated_services_verified", False):
-                    self._network_state = SandboxNetworkState.VERIFIED_SIMULATED
-                else:
-                    self._network_state = SandboxNetworkState.UNVERIFIED
-                    err = "SIMULATED_UNVERIFIED: In-guest positive verification of simulated services failed."
-                    rec = SandboxActionRecord(action="VERIFY_GUEST_CONTROL", status=ActionStatus.FAILED.value, details=err, errors=[err])
-                    self.actions.append(rec)
-                    return rec
-        except Exception:
-            # If stdout parsing fails, allow standard ready status if command succeeded
-            pass
 
         rec = SandboxActionRecord(
             action="VERIFY_GUEST_CONTROL",
@@ -594,20 +616,25 @@ class VirtualBoxSandboxBackend(SandboxBackend):
 
         if failed_required:
             err = f"Required telemetry collector(s) failed to start: {', '.join(failed_required)}."
+            self._errors.append(err)
             rec = SandboxActionRecord(action="START_TELEMETRY", status=ActionStatus.FAILED.value, details=err, errors=[err])
             self.actions.append(rec)
             return rec
 
-        st = ActionStatus.PARTIAL.value if partial_warnings else ActionStatus.SUCCESS.value
-        msg = f"Session telemetry directory '{self.guest_telemetry_dir}' initialized. "
         if partial_warnings:
-            msg += f"Optional collector(s) unavailable/partial: {', '.join(partial_warnings)}."
+            warn_msg = f"Optional collector(s) unavailable/partial: {', '.join(partial_warnings)}."
+            self._warnings.append(warn_msg)
+            self._telemetry_completeness = "PARTIAL"
         else:
-            msg += "All enabled collectors verified."
+            self._telemetry_completeness = "FULL"
+
+        msg = f"Session telemetry directory '{self.guest_telemetry_dir}' initialized. All required collectors verified."
+        if partial_warnings:
+            msg += f" (Optional collector(s) unavailable: {', '.join(partial_warnings)})"
 
         rec = SandboxActionRecord(
             action="START_TELEMETRY",
-            status=st,
+            status=ActionStatus.SUCCESS.value,
             details=msg
         )
         self.actions.append(rec)
@@ -638,15 +665,16 @@ class VirtualBoxSandboxBackend(SandboxBackend):
         with self._guest_auth_args() as auth_args:
             self._run_vbox([
                 "guestcontrol", self.config.vm_name,
+                "run",
                 *auth_args,
-                "run", "--exe", r"C:\Windows\System32\cmd.exe",
+                "--exe", r"C:\Windows\System32\cmd.exe",
                 "--wait-stdout", "--", "/c", f'if not exist "{self.guest_work_dir}" mkdir "{self.guest_work_dir}"'
             ], timeout=20)
 
             res = self._run_vbox([
                 "guestcontrol", self.config.vm_name,
-                *auth_args,
                 "copyto",
+                *auth_args,
                 "--target-directory", self.guest_work_dir,
                 str(host_p.resolve())
             ], timeout=60)
@@ -771,18 +799,76 @@ class VirtualBoxSandboxBackend(SandboxBackend):
             self.actions.append(rec)
             return rec
 
+        stop_errors: List[str] = []
+        stop_warnings: List[str] = []
+
         # 1. Invoke canonical stop_telemetry.ps1
-        self._run_guest_ps_script("stop_telemetry.ps1", ["-TelemetryDir", self.guest_telemetry_dir], timeout=35)
+        res1 = self._run_guest_ps_script("stop_telemetry.ps1", ["-TelemetryDir", self.guest_telemetry_dir], timeout=35)
+        if res1.timed_out:
+            stop_errors.append("stop_telemetry.ps1 timed out in guest VM.")
+        elif res1.exit_code != 0:
+            stop_errors.append(f"stop_telemetry.ps1 failed with exit code {res1.exit_code}: {res1.stderr or res1.stdout}")
+        else:
+            try:
+                stop_data = json.loads(res1.stdout.strip())
+                artifacts = stop_data.get("artifacts", {})
+                if self.config.enable_procmon and self.config.require_procmon and not artifacts.get("procmon_csv", False):
+                    stop_errors.append("Required Procmon CSV artifact was not produced by stop_telemetry.")
+                elif self.config.enable_procmon and not artifacts.get("procmon_csv", False):
+                    stop_warnings.append("Optional Procmon CSV artifact was not produced.")
+
+                if self.config.enable_pcap and self.config.require_pcap and not artifacts.get("network_pcap", False):
+                    stop_errors.append("Required PCAP artifact was not produced by stop_telemetry.")
+                elif self.config.enable_pcap and not artifacts.get("network_pcap", False):
+                    stop_warnings.append("Optional PCAP artifact was not produced.")
+
+                if self.config.enable_regshot and self.config.require_regshot and not artifacts.get("regshot_txt", False):
+                    stop_errors.append("Required Regshot artifact was not produced by stop_telemetry.")
+                elif self.config.enable_regshot and not artifacts.get("regshot_txt", False):
+                    stop_warnings.append("Optional Regshot artifact was not produced.")
+
+                for err in stop_data.get("errors", []):
+                    stop_warnings.append(f"stop_telemetry script warning: {err}")
+            except Exception as ex:
+                stop_warnings.append(f"Could not parse stop_telemetry JSON output: {ex}")
 
         # 2. Invoke canonical prepare_collection.ps1
-        self._run_guest_ps_script("prepare_collection.ps1", [
+        res2 = self._run_guest_ps_script("prepare_collection.ps1", [
             "-WorkDir", self.guest_work_dir,
             "-TelemetryDir", self.guest_telemetry_dir,
             "-TraceId", self._trace_id,
             "-SampleSha256", self._sample_sha256 or ""
         ], timeout=30)
+        if res2.timed_out:
+            stop_errors.append("prepare_collection.ps1 timed out in guest VM.")
+        elif res2.exit_code != 0:
+            stop_errors.append(f"prepare_collection.ps1 failed with exit code {res2.exit_code}: {res2.stderr or res2.stdout}")
+        else:
+            try:
+                prep_data = json.loads(res2.stdout.strip())
+                self._prepared_metadata = prep_data
+            except Exception as ex:
+                stop_warnings.append(f"Could not parse prepare_collection JSON output: {ex}")
 
-        rec = SandboxActionRecord(action="STOP_TELEMETRY", status=ActionStatus.SUCCESS.value, details="Telemetry collectors halted and logs finalized.")
+        self._errors.extend(stop_errors)
+        self._warnings.extend(stop_warnings)
+
+        if stop_errors:
+            st = ActionStatus.FAILED.value
+            details = f"Telemetry finalization failed: {'; '.join(stop_errors)}"
+        elif stop_warnings:
+            st = ActionStatus.PARTIAL.value
+            details = f"Telemetry collectors halted with warnings: {'; '.join(stop_warnings)}"
+        else:
+            st = ActionStatus.SUCCESS.value
+            details = "Telemetry collectors halted and logs finalized successfully."
+
+        rec = SandboxActionRecord(
+            action="STOP_TELEMETRY",
+            status=st,
+            details=details,
+            errors=list(stop_errors)
+        )
         self.actions.append(rec)
         return rec
 
@@ -790,7 +876,8 @@ class VirtualBoxSandboxBackend(SandboxBackend):
         """
         Transfers safe telemetry files from guest to host output_dir:
           procmon.csv, network.pcap, regshot.txt, execution_metadata.json
-        Uses VirtualBox 7.1 copyfrom syntax with explicit host-destination operand.
+        Uses VirtualBox 7.2 copyfrom syntax:
+          VBoxManage guestcontrol <vm> copyfrom [options...] <guest-src> <host-dst>
         Associates each artifact with trace_id, sample_sha256, and SHA256.
         Does NOT copy dropped executable binaries back to host by default.
         """
@@ -811,12 +898,12 @@ class VirtualBoxSandboxBackend(SandboxBackend):
             with self._guest_auth_args() as auth_args:
                 for local_name, guest_path in guest_artifacts:
                     host_dest = out_path / local_name
-                    # Oracle VirtualBox 7.1 guestcontrol copyfrom syntax:
-                    # guestcontrol <vm> copyfrom <guest-src> <host-dst>
+                    # Oracle VirtualBox 7.2 guestcontrol copyfrom syntax:
+                    # guestcontrol <vm> copyfrom [options...] <guest-src> <host-dst>
                     res = self._run_vbox([
                         "guestcontrol", self.config.vm_name,
-                        *auth_args,
                         "copyfrom",
+                        *auth_args,
                         guest_path,
                         str(host_dest.resolve())
                     ], timeout=30)
@@ -857,6 +944,7 @@ class VirtualBoxSandboxBackend(SandboxBackend):
             sandbox_network_mode=net_mode_val,
             network_verification_status=self._network_state.value,
             sandbox_network_verification_status=self._network_state.value,
+            telemetry_completeness=getattr(self, "_telemetry_completeness", "FULL"),
             started_at=self._start_time or datetime.now(timezone.utc).isoformat(),
             finished_at=self._end_time,
             execution_duration=self._execution_duration,
@@ -916,12 +1004,20 @@ class VirtualBoxSandboxBackend(SandboxBackend):
         """
         Verifies VM state is poweroff and reverted back to the clean snapshot.
         Enforces strict validation:
+        - Baseline snapshot UUID must have been recorded during VERIFY_BASELINE
         - VMState == poweroff
         - CurrentSnapshotName is non-blank and matches configured snapshot
-        - CurrentSnapshotUUID correlates with recorded baseline snapshot UUID
+        - CurrentSnapshotUUID is non-blank and matches recorded baseline snapshot UUID
         """
         if not self.is_available():
             rec = SandboxActionRecord(action="VERIFY_CLEAN", status=ActionStatus.NOT_CONFIGURED.value, details="VBoxManage missing.")
+            self.actions.append(rec)
+            return rec
+
+        # Baseline UUID is mandatory
+        if not self._baseline_snapshot_uuid:
+            err_msg = "Clean state verification failed: baseline snapshot UUID is missing (was never recorded during baseline verification)."
+            rec = SandboxActionRecord(action="VERIFY_CLEAN", status=ActionStatus.FAILED.value, details=err_msg, errors=[err_msg])
             self.actions.append(rec)
             return rec
 
@@ -943,12 +1039,9 @@ class VirtualBoxSandboxBackend(SandboxBackend):
         has_snap_name = bool(current_snap_name.strip())
         name_matches = (current_snap_name == self.config.snapshot_name)
 
-        # 3. Snapshot UUID must match baseline UUID if recorded
-        uuid_matches = True
-        if self._baseline_snapshot_uuid:
-            uuid_matches = (current_snap_uuid == self._baseline_snapshot_uuid)
-        elif not current_snap_uuid:
-            uuid_matches = False
+        # 3. Snapshot UUID must NOT be blank and must match baseline UUID
+        has_snap_uuid = bool(current_snap_uuid.strip())
+        uuid_matches = (has_snap_uuid and current_snap_uuid == self._baseline_snapshot_uuid)
 
         clean = is_poweroff and has_snap_name and name_matches and uuid_matches
         if not clean:
@@ -959,7 +1052,9 @@ class VirtualBoxSandboxBackend(SandboxBackend):
                 err_reasons.append("CurrentSnapshotName is blank")
             elif not name_matches:
                 err_reasons.append(f"CurrentSnapshotName is '{current_snap_name}' (expected '{self.config.snapshot_name}')")
-            if not uuid_matches:
+            if not has_snap_uuid:
+                err_reasons.append("CurrentSnapshotUUID is blank")
+            elif not uuid_matches:
                 err_reasons.append(f"CurrentSnapshotUUID '{current_snap_uuid}' != baseline '{self._baseline_snapshot_uuid}' (UUID mismatch)")
 
             err_msg = f"Clean state verification failed: {'; '.join(err_reasons)}."
@@ -968,7 +1063,7 @@ class VirtualBoxSandboxBackend(SandboxBackend):
             rec = SandboxActionRecord(
                 action="VERIFY_CLEAN",
                 status=ActionStatus.VERIFIED.value,
-                details=f"VM clean state verified: poweroff, snapshot '{current_snap_name}' (UUID: {current_snap_uuid or 'N/A'})."
+                details=f"VM clean state verified: poweroff, snapshot '{current_snap_name}' (UUID: {current_snap_uuid})."
             )
 
         self.actions.append(rec)

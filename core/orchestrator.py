@@ -390,10 +390,45 @@ class AnalysisOrchestrator:
                 domain=AnalysisDomain.PROCESS
             )
 
-            # Gate BehavioralAnalyzer telemetry ingestion (Requirement 11)
-            # Only ingest if sandbox status is valid (not FAILED or NOT_EXECUTED) and hashes correlate
-            is_trace_eligible = sandbox_trace.status not in (SandboxStatus.FAILED, SandboxStatus.NOT_EXECUTED)
+            # Gate BehavioralAnalyzer telemetry ingestion (Requirement 6)
+            # Before BehavioralAnalyzer ingestion require:
+            # - current trace_id (non-empty)
+            # - execution_metadata.trace_id matches sandbox_trace.trace_id
+            # - execution_metadata.sample_sha256 matches current sample SHA256
+            # - telemetry SHA256 exists in sandbox_trace.telemetry_hashes
+            # - calculated SHA256 equals trace SHA256
+            # Do not ingest a file merely because expected_sha is missing.
+            is_trace_eligible = (
+                sandbox_trace.status not in (SandboxStatus.FAILED, SandboxStatus.NOT_EXECUTED)
+                and bool(sandbox_trace.trace_id)
+            )
+
+            metadata_bound = False
             if is_trace_eligible:
+                if sandbox_trace.execution_metadata_path and Path(sandbox_trace.execution_metadata_path).exists():
+                    try:
+                        meta_data = json.loads(Path(sandbox_trace.execution_metadata_path).read_text(encoding="utf-8"))
+                        meta_trace_id = meta_data.get("trace_id")
+                        meta_sample_sha = meta_data.get("sample_sha256")
+
+                        trace_id_matches = bool(meta_trace_id and meta_trace_id == sandbox_trace.trace_id)
+                        sample_sha_matches = bool(meta_sample_sha and (not sample_sha256 or meta_sample_sha == sample_sha256))
+
+                        if trace_id_matches and sample_sha_matches:
+                            metadata_bound = True
+                        else:
+                            reasons = []
+                            if not trace_id_matches:
+                                reasons.append(f"trace_id mismatch ('{meta_trace_id}' != '{sandbox_trace.trace_id}')")
+                            if not sample_sha_matches:
+                                reasons.append(f"sample_sha256 mismatch ('{meta_sample_sha}' != '{sample_sha256}')")
+                            manifest.warnings.append(f"Sandbox execution metadata binding rejected: {'; '.join(reasons)}.")
+                    except Exception as ex:
+                        manifest.warnings.append(f"Failed to parse execution metadata for telemetry binding: {ex}")
+                else:
+                    manifest.warnings.append("Sandbox execution metadata file missing: telemetry binding rejected.")
+
+            if is_trace_eligible and metadata_bound:
                 if sandbox_trace.pcap_path and Path(sandbox_trace.pcap_path).exists():
                     pcap_p = Path(sandbox_trace.pcap_path)
                     calc_sha = hashlib.sha256(pcap_p.read_bytes()).hexdigest()
@@ -401,11 +436,10 @@ class AnalysisOrchestrator:
                     if expected_sha and calc_sha == expected_sha:
                         p_pcap = pcap_p
                         manifest.record_artifact("pcap", p_pcap)
-                    elif not expected_sha:
-                        p_pcap = pcap_p
-                        manifest.record_artifact("pcap", p_pcap)
                     else:
-                        manifest.warnings.append("PCAP telemetry rejected: SHA256 mismatch with sandbox trace record.")
+                        manifest.warnings.append(
+                            f"PCAP telemetry rejected: SHA256 mismatch or missing expected hash (calc={calc_sha}, expected={expected_sha})."
+                        )
 
                 if sandbox_trace.procmon_csv_path and Path(sandbox_trace.procmon_csv_path).exists():
                     procmon_p = Path(sandbox_trace.procmon_csv_path)
@@ -414,11 +448,10 @@ class AnalysisOrchestrator:
                     if expected_sha and calc_sha == expected_sha:
                         p_procmon = procmon_p
                         manifest.record_artifact("procmon", p_procmon)
-                    elif not expected_sha:
-                        p_procmon = procmon_p
-                        manifest.record_artifact("procmon", p_procmon)
                     else:
-                        manifest.warnings.append("Procmon telemetry rejected: SHA256 mismatch with sandbox trace record.")
+                        manifest.warnings.append(
+                            f"Procmon telemetry rejected: SHA256 mismatch or missing expected hash (calc={calc_sha}, expected={expected_sha})."
+                        )
 
                 if sandbox_trace.regshot_path and Path(sandbox_trace.regshot_path).exists():
                     regshot_p = Path(sandbox_trace.regshot_path)
@@ -427,13 +460,13 @@ class AnalysisOrchestrator:
                     if expected_sha and calc_sha == expected_sha:
                         p_regshot = regshot_p
                         manifest.record_artifact("regshot", p_regshot)
-                    elif not expected_sha:
-                        p_regshot = regshot_p
-                        manifest.record_artifact("regshot", p_regshot)
                     else:
-                        manifest.warnings.append("Regshot telemetry rejected: SHA256 mismatch with sandbox trace record.")
+                        manifest.warnings.append(
+                            f"Regshot telemetry rejected: SHA256 mismatch or missing expected hash (calc={calc_sha}, expected={expected_sha})."
+                        )
             else:
-                manifest.warnings.append(f"Sandbox telemetry ingestion blocked: session status is '{sandbox_trace.status}'.")
+                if not is_trace_eligible:
+                    manifest.warnings.append(f"Sandbox telemetry ingestion blocked: session status is '{sandbox_trace.status}'.")
 
         # 4c. Behavioral Telemetry (PCAP, Procmon, Regshot)
         if prof_cfg.enable_behavioral and (p_pcap or p_procmon or p_regshot):

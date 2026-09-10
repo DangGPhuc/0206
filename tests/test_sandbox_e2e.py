@@ -69,8 +69,11 @@ class TestSandboxE2E(unittest.TestCase):
             regshot_file = sandbox_mock_dir / "regshot.txt"
             regshot_file.write_text("----------------------------------\nKeys added: 1\nValues added: 1\n----------------------------------\n")
 
+            sample_sha = hashlib.sha256(Path(self.fixture_exe).read_bytes()).hexdigest()
             meta_file = sandbox_mock_dir / "execution_metadata.json"
             meta_file.write_text(json.dumps({
+                "trace_id": "vbox-e2e-test",
+                "sample_sha256": sample_sha,
                 "processes": [{"name": "sample.exe", "pid": 1234}, {"name": "cmd.exe", "pid": 5678}],
                 "dropped_files": [
                     {
@@ -93,7 +96,7 @@ class TestSandboxE2E(unittest.TestCase):
                 status=SandboxStatus.COMPLETED,
                 execution_duration=12.5,
                 sample_guest_path=r"C:\0206\work\sample.exe",
-                sample_sha256="fake_sha256_for_sample",
+                sample_sha256=sample_sha,
                 pcap_path=str(pcap_file),
                 procmon_csv_path=str(procmon_file),
                 regshot_path=str(regshot_file),
@@ -110,6 +113,7 @@ class TestSandboxE2E(unittest.TestCase):
                 telemetry_hashes={
                     "procmon.csv": hashlib.sha256(procmon_file.read_bytes()).hexdigest(),
                     "network.pcap": hashlib.sha256(pcap_file.read_bytes()).hexdigest(),
+                    "regshot.txt": hashlib.sha256(regshot_file.read_bytes()).hexdigest(),
                 },
                 execution_status="EXECUTED",
                 revert_status="VERIFIED",
@@ -220,6 +224,59 @@ class TestSandboxE2E(unittest.TestCase):
                 )
 
                 # Verify that behavioral events were NOT ingested into evidence store
+                behavioral_records = [
+                    rec for rec in res.evidence_store.all()
+                    if rec.source_type in ("PROCMON_EVENT", "BEHAVIORAL_PROCESS")
+                ]
+                self.assertEqual(len(behavioral_records), 0)
+
+    def test_strong_telemetry_binding_rejection_on_mismatched_metadata_or_missing_hash(self):
+        """Telemetry must be rejected if metadata trace_id mismatches or expected hash is missing."""
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            sandbox_mock_dir = Path(tmp_dir) / "mock_sandbox"
+            sandbox_mock_dir.mkdir(parents=True, exist_ok=True)
+
+            procmon_file = sandbox_mock_dir / "procmon.csv"
+            procmon_file.write_text('"Time","Process Name","PID","Operation"\n"10:00:00","sample.exe",1234,"Process Create"\n')
+
+            # Metadata with mismatched trace_id
+            meta_file = sandbox_mock_dir / "execution_metadata.json"
+            meta_file.write_text(json.dumps({
+                "trace_id": "different-trace-id",
+                "sample_sha256": "different_sha",
+            }))
+
+            mismatched_trace = SandboxExecutionTrace(
+                trace_id="vbox-active-trace",
+                backend_name="virtualbox",
+                vm_name="win10-malware-analysis",
+                snapshot_name="clean_triage_base",
+                network_mode="HOST_ONLY",
+                network_verification_status="VERIFIED_HOST_ONLY",
+                status=SandboxStatus.COMPLETED,
+                procmon_csv_path=str(procmon_file),
+                execution_metadata_path=str(meta_file),
+                telemetry_hashes={},  # Missing expected hash
+                execution_status="EXITED",
+            )
+
+            with patch("core.orchestrator.SandboxController") as mock_ctrl_cls:
+                mock_ctrl_inst = MagicMock()
+                mock_ctrl_inst.detonate.return_value = mismatched_trace
+                mock_ctrl_inst.run_safe_session.return_value = mismatched_trace
+                mock_ctrl_cls.return_value = mock_ctrl_inst
+
+                res = self.orchestrator.run(
+                    sample_path=self.fixture_exe,
+                    output_dir=tmp_dir,
+                    profile="minimal",
+                    offline=True,
+                    detonate=True,
+                    sandbox_backend="virtualbox"
+                )
+
+                # Ingestion must be rejected
+                self.assertTrue(any("metadata binding rejected" in w for w in res.manifest.warnings))
                 behavioral_records = [
                     rec for rec in res.evidence_store.all()
                     if rec.source_type in ("PROCMON_EVENT", "BEHAVIORAL_PROCESS")

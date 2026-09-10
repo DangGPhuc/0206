@@ -126,11 +126,13 @@ class TestVirtualBoxBackend(unittest.TestCase):
     @patch("sandbox.backends.virtualbox.SafeProcessGuard.run")
     def test_credential_redaction_in_actions_and_logs(self, mock_run):
         """Plaintext guest passwords must never appear in command logs, action records, or details."""
-        mock_run.return_value = make_exec_result(
-            ["/usr/bin/VBoxManage", "guestcontrol", "test_analysis_vm", "run", "--passwordfile", "/tmp/dummy"],
-            exit_code=0,
-            stdout="0206_READY\n"
-        )
+        def mock_vbox_run(cmd, *args, **kwargs):
+            cmd_str = " ".join(cmd)
+            if "preflight.ps1" in cmd_str:
+                return make_exec_result(cmd, exit_code=0, stdout=json.dumps({"status": "READY"}))
+            return make_exec_result(cmd, exit_code=0, stdout="0206_READY\n")
+
+        mock_run.side_effect = mock_vbox_run
         rec = self.backend.verify_guest_control()
         self.assertTrue(rec.is_success())
         for action in self.backend.actions:
@@ -159,6 +161,16 @@ from pathlib import Path
 args = sys.argv[1:]
 
 if "guestcontrol" in args:
+    gc_idx = args.index("guestcontrol")
+    if len(args) < gc_idx + 3:
+        sys.stderr.write(f"ERROR: Missing guestcontrol subcommand: {args}\\n")
+        sys.exit(1)
+    vm_name = args[gc_idx + 1]
+    subcmd = args[gc_idx + 2]
+    if subcmd not in ("run", "copyto", "copyfrom", "mkdir", "stat"):
+        sys.stderr.write(f"ERROR: VirtualBox 7.2 requires subcommand ('run', 'copyto', 'copyfrom') immediately after VM name. Got '{subcmd}'\\n")
+        sys.exit(1)
+
     # Reject plaintext --password
     if "--password" in args:
         sys.stderr.write("ERROR: Plaintext --password forbidden!\\n")
@@ -168,15 +180,27 @@ if "guestcontrol" in args:
         sys.stderr.write("ERROR: Missing --passwordfile!\\n")
         sys.exit(2)
 
-    if "copyfrom" in args:
-        # Validate copyfrom arguments: guestcontrol <vm> ... copyfrom <guest_src> <host_dst>
-        idx = args.index("copyfrom")
-        copy_args = [a for a in args[idx+1:] if not a.startswith("--")]
-        if len(copy_args) < 2:
+    if subcmd == "copyfrom":
+        # Validate copyfrom arguments: guestcontrol <vm> copyfrom [options...] <guest_src> <host_dst>
+        sub_args = args[gc_idx + 3:]
+        pos_args = []
+        skip_next = False
+        for a in sub_args:
+            if skip_next:
+                skip_next = False
+                continue
+            if a in ("--username", "--passwordfile", "-u", "-p"):
+                skip_next = True
+                continue
+            if a.startswith("--"):
+                continue
+            pos_args.append(a)
+
+        if len(pos_args) < 2:
             sys.stderr.write(f"ERROR: Malformed copyfrom argv: {args}\\n")
             sys.exit(1)
 
-        guest_src, host_dst = copy_args[0], copy_args[1]
+        guest_src, host_dst = pos_args[0], pos_args[1]
         host_path = Path(host_dst)
         host_path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -197,13 +221,14 @@ if "guestcontrol" in args:
             host_path.write_text("data")
         sys.exit(0)
 
-    if "copyto" in args:
+    if subcmd == "copyto":
         sys.exit(0)
 
-    if "run" in args:
+    if subcmd == "run":
         args_str = " ".join(args)
         if "preflight.ps1" in args_str:
             print(json.dumps({
+                "status": "READY",
                 "tools": {
                     "procmon": {"installed": True, "path": "C:\\\\0206\\\\tools\\\\procmon.exe", "version": "3.92"},
                     "tshark": {"installed": True, "path": "C:\\\\0206\\\\tools\\\\tshark.exe", "version": "4.0.0"},
@@ -389,7 +414,7 @@ sys.exit(0)
 
     @patch("sandbox.backends.virtualbox.VirtualBoxSandboxBackend._run_guest_ps_script")
     def test_start_telemetry_partial_when_optional_regshot_missing(self, mock_script):
-        """When optional Regshot fails, start_telemetry returns PARTIAL, not FAILED."""
+        """When optional Regshot fails, start_telemetry gate succeeds with SUCCESS, while recording PARTIAL completeness."""
         self.config.require_procmon = True
         self.config.require_pcap = True
         self.config.require_regshot = False
@@ -403,7 +428,10 @@ sys.exit(0)
             })
         )
         rec = self.backend.start_telemetry()
-        self.assertEqual(rec.status, ActionStatus.PARTIAL.value)
+        self.assertTrue(rec.is_success())
+        self.assertEqual(rec.status, ActionStatus.SUCCESS.value)
+        self.assertEqual(self.backend._telemetry_completeness, "PARTIAL")
+        self.assertTrue(any("Regshot" in w for w in self.backend._warnings))
 
     # =========================================================================
     # Requirement 3: Execution Status Semantics
@@ -546,6 +574,106 @@ require_regshot = false
         self.assertEqual(loaded_cfg.vbox_user_home, "/opt/virtualbox/config")
         self.assertTrue(loaded_cfg.require_procmon)
         self.assertFalse(loaded_cfg.require_regshot)
+
+    # =========================================================================
+    # Additional Hardened Invariants: Ordering, JSON, UUID, Truthful Telemetry
+    # =========================================================================
+    @patch("sandbox.backends.virtualbox.SafeProcessGuard.run")
+    def test_guestcontrol_canonical_72_ordering(self, mock_run):
+        """Oracle VirtualBox 7.2 requires subcommand immediately after VM name."""
+        mock_run.return_value = make_exec_result(
+            ["VBoxManage", "guestcontrol", "test_analysis_vm", "run", "--passwordfile", "/tmp/dummy"],
+            exit_code=0,
+            stdout="0206_READY\n"
+        )
+        self.backend.verify_guest_control()
+        # Verify every guestcontrol command has subcommand ('run', 'copyto', 'copyfrom') as args[2]
+        for call in mock_run.call_args_list:
+            cmd = call[0][0]
+            if "guestcontrol" in cmd:
+                gc_idx = cmd.index("guestcontrol")
+                self.assertGreater(len(cmd), gc_idx + 2)
+                subcmd = cmd[gc_idx + 2]
+                self.assertIn(subcmd, ("run", "copyto", "copyfrom"))
+
+    @patch("sandbox.backends.virtualbox.VirtualBoxSandboxBackend._stage_harness_scripts", return_value=True)
+    @patch("sandbox.backends.virtualbox.VirtualBoxSandboxBackend._run_guest_ps_script")
+    @patch("sandbox.backends.virtualbox.SafeProcessGuard.run")
+    def test_verify_guest_control_fails_on_malformed_preflight_json(self, mock_run, mock_ps, mock_stage):
+        """Malformed or missing preflight JSON must fail closed (ActionStatus.FAILED)."""
+        mock_run.return_value = make_exec_result(
+            ["VBoxManage", "guestcontrol", "test_analysis_vm", "run"],
+            exit_code=0,
+            stdout="0206_READY\n"
+        )
+        # 1. Non-JSON stdout
+        mock_ps.return_value = make_exec_result(
+            ["guestcontrol", "test_analysis_vm", "run", "preflight.ps1"],
+            exit_code=0,
+            stdout="NOT_JSON_AT_ALL"
+        )
+        rec = self.backend.verify_guest_control()
+        self.assertFalse(rec.is_success())
+        self.assertEqual(rec.status, ActionStatus.FAILED.value)
+        self.assertIn("Failed to parse guest preflight JSON", rec.details)
+
+        # 2. JSON status not READY
+        mock_ps.return_value = make_exec_result(
+            ["guestcontrol", "test_analysis_vm", "run", "preflight.ps1"],
+            exit_code=0,
+            stdout=json.dumps({"status": "FAILED", "errors": ["Dependency missing"]})
+        )
+        rec2 = self.backend.verify_guest_control()
+        self.assertFalse(rec2.is_success())
+        self.assertEqual(rec2.status, ActionStatus.FAILED.value)
+        self.assertIn("expected 'READY'", rec2.details)
+
+    @patch("sandbox.backends.virtualbox.SafeProcessGuard.run")
+    def test_verify_baseline_fails_when_snapshot_uuid_missing(self, mock_run):
+        """Baseline verification MUST fail if SnapshotUUID cannot be resolved (no name-only fallback)."""
+        mock_run.return_value = make_exec_result(
+            ["VBoxManage", "snapshot", "test_analysis_vm", "list", "--machinereadable"],
+            exit_code=0,
+            stdout='SnapshotName="test_clean_base"\n'  # SnapshotUUID missing
+        )
+        rec = self.backend.verify_baseline()
+        self.assertFalse(rec.is_success())
+        self.assertEqual(rec.status, ActionStatus.FAILED.value)
+        self.assertIn("SnapshotUUID is missing", rec.details)
+
+    @patch("sandbox.backends.virtualbox.SafeProcessGuard.run")
+    def test_verify_clean_fails_when_baseline_uuid_never_recorded(self, mock_run):
+        """Clean state verification MUST fail if baseline snapshot UUID was never obtained."""
+        self.backend._baseline_snapshot_uuid = None
+        rec = self.backend.verify_clean()
+        self.assertFalse(rec.is_success())
+        self.assertEqual(rec.status, ActionStatus.FAILED.value)
+        self.assertIn("baseline snapshot UUID is missing", rec.details)
+
+    @patch("sandbox.backends.virtualbox.VirtualBoxSandboxBackend._run_guest_ps_script")
+    def test_stop_telemetry_truthful_failure(self, mock_script):
+        """stop_telemetry must truthfully fail if stop_telemetry.ps1 fails or times out."""
+        # 1. Non-zero exit code
+        mock_script.return_value = make_exec_result(
+            ["guestcontrol", "test_analysis_vm", "run", "stop_telemetry.ps1"],
+            exit_code=1,
+            stderr="Stop-Process failed: access denied"
+        )
+        rec = self.backend.stop_telemetry()
+        self.assertFalse(rec.is_success())
+        self.assertEqual(rec.status, ActionStatus.FAILED.value)
+        self.assertIn("stop_telemetry.ps1 failed with exit code 1", rec.details)
+
+        # 2. Timeout
+        mock_script.return_value = make_exec_result(
+            ["guestcontrol", "test_analysis_vm", "run", "stop_telemetry.ps1"],
+            exit_code=1,
+            timed_out=True
+        )
+        rec2 = self.backend.stop_telemetry()
+        self.assertFalse(rec2.is_success())
+        self.assertEqual(rec2.status, ActionStatus.FAILED.value)
+        self.assertIn("timed out", rec2.details)
 
 
 if __name__ == "__main__":

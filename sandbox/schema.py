@@ -239,6 +239,7 @@ class SandboxExecutionTrace(BaseModel):
     sandbox_network_mode: Optional[str] = None
     network_verification_status: str = "UNVERIFIED"
     sandbox_network_verification_status: Optional[str] = None
+    telemetry_completeness: str = "FULL"
     status: SandboxStatus = SandboxStatus.COMPLETED
     started_at: str = Field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
     finished_at: Optional[str] = None

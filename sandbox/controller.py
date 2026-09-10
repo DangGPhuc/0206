@@ -212,7 +212,8 @@ class SandboxController:
             trace.revert_status = "VERIFIED" if revert_ok else "FAILED"
         elif executed:
             trace.status = SandboxStatus.COMPLETED
-            trace.execution_status = "EXECUTED"
+            if not trace.execution_status or trace.execution_status in ("NOT_EXECUTED", "UNKNOWN"):
+                trace.execution_status = "EXECUTED"
             trace.revert_status = "VERIFIED"
         else:
             trace.status = SandboxStatus.NOT_EXECUTED
