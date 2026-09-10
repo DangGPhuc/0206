@@ -50,7 +50,7 @@ from analyzers.behavioral.event_normalizer import BehavioralAnalyzer
 from analyzers.code.capstone_triage import CodeAnalyzer
 from ai.agent import LLMThreatSynthesizer
 from integrations.adapters import ADAPTER_REGISTRY
-from sandbox.schema import SandboxGuestConfig, SandboxExecutionTrace, SandboxNetworkState
+from sandbox.schema import SandboxGuestConfig, SandboxExecutionTrace, SandboxNetworkState, SandboxStatus
 from sandbox.controller import SandboxController
 
 from reporting.adapters.json_adapter import JSONReportAdapter
@@ -295,8 +295,12 @@ class AnalysisOrchestrator:
             sandbox_trace = controller.run_safe_session(str(p_sample), str(dir_sandbox_temp))
             manifest.record_timing("SandboxController", (time.perf_counter() - t0) * 1000.0)
             manifest.sandbox_provider = sandbox_trace.backend_name
-            manifest.network_mode = sandbox_trace.network_verification_status
+            manifest.sandbox_network_mode = sandbox_trace.sandbox_network_mode or sandbox_trace.network_mode
+            manifest.sandbox_network_verification_status = sandbox_trace.network_verification_status
+            manifest.network_mode = sandbox_trace.network_mode
             manifest.snapshot_identifier = sandbox_trace.snapshot_name
+            manifest.snapshot_uuid = sandbox_trace.baseline_snapshot_uuid
+            manifest.telemetry_hashes = dict(sandbox_trace.telemetry_hashes)
 
             if sandbox_trace.errors:
                 manifest.errors.extend(sandbox_trace.errors)
@@ -330,6 +334,24 @@ class AnalysisOrchestrator:
                 extractor="SandboxController",
                 confidence=1.0,
                 domain=AnalysisDomain.PROCESS
+            )
+            evidence_store.create(
+                source_artifact="sandbox",
+                source_type="SANDBOX_PROVENANCE",
+                field="snapshot_uuid",
+                value=sandbox_trace.baseline_snapshot_uuid or "N/A",
+                extractor="SandboxController",
+                confidence=1.0,
+                domain=AnalysisDomain.PROCESS
+            )
+            evidence_store.create(
+                source_artifact="sandbox",
+                source_type="SANDBOX_PROVENANCE",
+                field="sandbox_network_mode",
+                value=sandbox_trace.sandbox_network_mode or sandbox_trace.network_mode,
+                extractor="SandboxController",
+                confidence=1.0,
+                domain=AnalysisDomain.NETWORK
             )
             evidence_store.create(
                 source_artifact="sandbox",
@@ -368,16 +390,50 @@ class AnalysisOrchestrator:
                 domain=AnalysisDomain.PROCESS
             )
 
-            # Automatically map collected sandbox telemetry into BehavioralAnalyzer
-            if sandbox_trace.pcap_path and Path(sandbox_trace.pcap_path).exists():
-                p_pcap = Path(sandbox_trace.pcap_path)
-                manifest.record_artifact("pcap", p_pcap)
-            if sandbox_trace.procmon_csv_path and Path(sandbox_trace.procmon_csv_path).exists():
-                p_procmon = Path(sandbox_trace.procmon_csv_path)
-                manifest.record_artifact("procmon", p_procmon)
-            if sandbox_trace.regshot_path and Path(sandbox_trace.regshot_path).exists():
-                p_regshot = Path(sandbox_trace.regshot_path)
-                manifest.record_artifact("regshot", p_regshot)
+            # Gate BehavioralAnalyzer telemetry ingestion (Requirement 11)
+            # Only ingest if sandbox status is valid (not FAILED or NOT_EXECUTED) and hashes correlate
+            is_trace_eligible = sandbox_trace.status not in (SandboxStatus.FAILED, SandboxStatus.NOT_EXECUTED)
+            if is_trace_eligible:
+                if sandbox_trace.pcap_path and Path(sandbox_trace.pcap_path).exists():
+                    pcap_p = Path(sandbox_trace.pcap_path)
+                    calc_sha = hashlib.sha256(pcap_p.read_bytes()).hexdigest()
+                    expected_sha = sandbox_trace.telemetry_hashes.get("network.pcap")
+                    if expected_sha and calc_sha == expected_sha:
+                        p_pcap = pcap_p
+                        manifest.record_artifact("pcap", p_pcap)
+                    elif not expected_sha:
+                        p_pcap = pcap_p
+                        manifest.record_artifact("pcap", p_pcap)
+                    else:
+                        manifest.warnings.append("PCAP telemetry rejected: SHA256 mismatch with sandbox trace record.")
+
+                if sandbox_trace.procmon_csv_path and Path(sandbox_trace.procmon_csv_path).exists():
+                    procmon_p = Path(sandbox_trace.procmon_csv_path)
+                    calc_sha = hashlib.sha256(procmon_p.read_bytes()).hexdigest()
+                    expected_sha = sandbox_trace.telemetry_hashes.get("procmon.csv")
+                    if expected_sha and calc_sha == expected_sha:
+                        p_procmon = procmon_p
+                        manifest.record_artifact("procmon", p_procmon)
+                    elif not expected_sha:
+                        p_procmon = procmon_p
+                        manifest.record_artifact("procmon", p_procmon)
+                    else:
+                        manifest.warnings.append("Procmon telemetry rejected: SHA256 mismatch with sandbox trace record.")
+
+                if sandbox_trace.regshot_path and Path(sandbox_trace.regshot_path).exists():
+                    regshot_p = Path(sandbox_trace.regshot_path)
+                    calc_sha = hashlib.sha256(regshot_p.read_bytes()).hexdigest()
+                    expected_sha = sandbox_trace.telemetry_hashes.get("regshot.txt")
+                    if expected_sha and calc_sha == expected_sha:
+                        p_regshot = regshot_p
+                        manifest.record_artifact("regshot", p_regshot)
+                    elif not expected_sha:
+                        p_regshot = regshot_p
+                        manifest.record_artifact("regshot", p_regshot)
+                    else:
+                        manifest.warnings.append("Regshot telemetry rejected: SHA256 mismatch with sandbox trace record.")
+            else:
+                manifest.warnings.append(f"Sandbox telemetry ingestion blocked: session status is '{sandbox_trace.status}'.")
 
         # 4c. Behavioral Telemetry (PCAP, Procmon, Regshot)
         if prof_cfg.enable_behavioral and (p_pcap or p_procmon or p_regshot):
@@ -504,12 +560,149 @@ class AnalysisOrchestrator:
             "provider": synthesizer.provider
         }
 
+        s_cfg_str = f"{sandbox_backend or 'virtualbox'}:{getattr(sandbox_config, 'network_mode', 'ISOLATED')}" if detonate else "none"
         manifest.configuration_hash = hashlib.sha256(
-            f"{profile}:{privacy_mode}:{offline}:{adaptive}:{portable}".encode("utf-8")
+            f"{profile}:{privacy_mode}:{offline}:{adaptive}:{portable}:{detonate}:{s_cfg_str}".encode("utf-8")
         ).hexdigest()[:16]
 
         # -------------------------------------------------------------
-        # 10. MULTI-FORMAT DELIVERABLE GENERATION
+        # 10. CASE BUNDLE LAYOUT & ARTIFACT PERSISTENCE
+        # -------------------------------------------------------------
+        dir_input = out_dir / "input"
+        dir_reputation = out_dir / "reputation"
+        dir_basic = out_dir / "basic"
+        dir_advanced = out_dir / "advanced"
+        dir_evidence = out_dir / "evidence"
+        dir_report = out_dir / "report"
+        dir_manifest = out_dir / "manifest"
+        dir_sandbox = out_dir / "sandbox"
+
+        for d in (dir_input, dir_reputation, dir_basic, dir_advanced, dir_evidence, dir_report, dir_manifest):
+            d.mkdir(parents=True, exist_ok=True)
+            set_posix_permissions(d, 0o700)
+
+        # Create sanitized views of raw telemetry before persistence (Priority 3)
+        safe_static_data = privacy_redactor.redact(static_data)
+        safe_code_data = privacy_redactor.redact(code_data)
+        safe_behavioral_data = privacy_redactor.redact(behavioral_data)
+        safe_reputation_data = privacy_redactor.redact(manifest.reputation or {})
+        safe_artifacts_meta = privacy_redactor.redact(manifest.artifacts)
+
+        # Save input metadata (do NOT copy original sample binary unless requested)
+        input_meta_file = dir_input / "input_metadata.json"
+        atomic_write_json(input_meta_file, safe_artifacts_meta)
+
+        # Save reputation raw stage output
+        rep_file = dir_reputation / "reputation.json"
+        atomic_write_json(rep_file, safe_reputation_data)
+
+        # Save basic triage summary
+        basic_file = dir_basic / "basic_triage.json"
+        atomic_write_json(basic_file, {
+            "static": safe_static_data.get("file_info", {}),
+            "sections_count": len(safe_static_data.get("sections", [])),
+            "imports_count": len(safe_static_data.get("imports", {}))
+        })
+
+        # Save advanced triage summary
+        adv_file = dir_advanced / "advanced_triage.json"
+        atomic_write_json(adv_file, {
+            "code_analysis": safe_code_data,
+            "behavioral_events": len(safe_behavioral_data.get("normalized_events", []))
+        })
+
+        # Save sandbox artifacts in case/sandbox/ and record lineage BEFORE report generation (Requirement 12)
+        if sandbox_trace:
+            dir_sandbox.mkdir(parents=True, exist_ok=True)
+            set_posix_permissions(dir_sandbox, 0o700)
+            safe_sandbox_trace = privacy_redactor.redact(sandbox_trace.model_dump())
+            trace_file = dir_sandbox / "sandbox_trace.json"
+            atomic_write_json(trace_file, safe_sandbox_trace)
+            set_posix_permissions(trace_file, 0o600)
+            manifest.record_output_artifact("sandbox/sandbox_trace.json", trace_file)
+            manifest.sandbox_trace_hash = manifest.output_lineage.get("sandbox/sandbox_trace.json", {}).get("sha256")
+
+            if sandbox_trace.execution_metadata_path and Path(sandbox_trace.execution_metadata_path).exists():
+                meta_src = Path(sandbox_trace.execution_metadata_path)
+                meta_dst = dir_sandbox / "execution_metadata.json"
+                if meta_src.resolve() != meta_dst.resolve():
+                    shutil.copy2(meta_src, meta_dst)
+                set_posix_permissions(meta_dst, 0o600)
+                manifest.record_output_artifact("sandbox/execution_metadata.json", meta_dst)
+
+            if sandbox_trace.procmon_csv_path and Path(sandbox_trace.procmon_csv_path).exists():
+                p_src = Path(sandbox_trace.procmon_csv_path)
+                p_dst = dir_sandbox / "procmon.csv"
+                if p_src.resolve() != p_dst.resolve():
+                    shutil.copy2(p_src, p_dst)
+                set_posix_permissions(p_dst, 0o600)
+                manifest.record_output_artifact("sandbox/procmon.csv", p_dst)
+
+            if sandbox_trace.pcap_path and Path(sandbox_trace.pcap_path).exists():
+                p_src = Path(sandbox_trace.pcap_path)
+                p_dst = dir_sandbox / "network.pcap"
+                if p_src.resolve() != p_dst.resolve():
+                    shutil.copy2(p_src, p_dst)
+                set_posix_permissions(p_dst, 0o600)
+                manifest.record_output_artifact("sandbox/network.pcap", p_dst)
+
+            if sandbox_trace.regshot_path and Path(sandbox_trace.regshot_path).exists():
+                r_src = Path(sandbox_trace.regshot_path)
+                r_dst = dir_sandbox / "regshot.txt"
+                if r_src.resolve() != r_dst.resolve():
+                    shutil.copy2(r_src, r_dst)
+                set_posix_permissions(r_dst, 0o600)
+                manifest.record_output_artifact("sandbox/regshot.txt", r_dst)
+
+        # 4. Evidence Store JSON export - Privacy-Safe by default (Phase 4)
+        evidence_json_path = out_dir / "evidence.json"
+        sanitized_evidence_records = privacy_redactor.redact(evidence_store.to_dict())
+        atomic_write_json(evidence_json_path, sanitized_evidence_records)
+        atomic_write_json(dir_evidence / "evidence.json", sanitized_evidence_records)
+        manifest.record_output_artifact("evidence.json", evidence_json_path)
+
+        # 5. Findings JSON export - Privacy-Safe by default (Phase 4)
+        findings_json_path = out_dir / "findings.json"
+        sanitized_findings_records = privacy_redactor.redact([f.model_dump() for f in validated_findings])
+        atomic_write_json(findings_json_path, sanitized_findings_records)
+        atomic_write_json(dir_report / "findings.json", sanitized_findings_records)
+        manifest.record_output_artifact("findings.json", findings_json_path)
+
+        # 6. Assessment JSON export - Privacy-Safe by default (Phase 4)
+        assessment_json_path = out_dir / "assessment.json"
+        sanitized_assessment_record = privacy_redactor.redact(assessment.model_dump())
+        atomic_write_json(assessment_json_path, sanitized_assessment_record)
+        atomic_write_json(dir_report / "assessment.json", sanitized_assessment_record)
+        manifest.record_output_artifact("assessment.json", assessment_json_path)
+
+        # 7. IOCs JSON export - Privacy-Safe by default (Phase 4)
+        iocs_json_path = out_dir / "iocs.json"
+        sanitized_iocs = privacy_redactor.redact({"host_iocs": assessment.host_iocs, "network_iocs": assessment.network_iocs})
+        atomic_write_json(iocs_json_path, sanitized_iocs)
+        atomic_write_json(dir_report / "iocs.json", sanitized_iocs)
+        manifest.record_output_artifact("iocs.json", iocs_json_path)
+
+        # 8. Coverage JSON export
+        coverage_json_path = out_dir / "coverage.json"
+        cov = getattr(assessment, "coverage", None)
+        cov_dict = cov.model_dump() if hasattr(cov, "model_dump") else (cov if isinstance(cov, dict) else {})
+        sanitized_cov = privacy_redactor.redact(cov_dict)
+        atomic_write_json(coverage_json_path, sanitized_cov)
+        atomic_write_json(dir_report / "coverage.json", sanitized_cov)
+        manifest.record_output_artifact("coverage.json", coverage_json_path)
+
+        # Opt-in Raw Evidence Export (Phase 4)
+        raw_evidence_json_path = None
+        if export_raw_evidence:
+            raw_evidence_json_path = out_dir / "evidence.raw.json"
+            evidence_store.export(raw_evidence_json_path)
+            evidence_store.export(dir_evidence / "evidence.raw.json")
+            set_posix_permissions(raw_evidence_json_path, 0o600)
+            set_posix_permissions(dir_evidence / "evidence.raw.json", 0o600)
+            manifest.record_output_artifact("evidence.raw.json", raw_evidence_json_path)
+
+        # -------------------------------------------------------------
+        # 11. MULTI-FORMAT DELIVERABLE GENERATION
         # -------------------------------------------------------------
         notify("Compiling deliverables (JSON, Markdown, DOCX, Evidence, Findings)...", 12)
 
@@ -554,13 +747,6 @@ class AnalysisOrchestrator:
                 "derivation_rule": ", ".join(sorted(rules)) if rules else "Direct observation"
             })
 
-        # Create sanitized views before ANY default public export (Priority 3)
-        safe_static_data = privacy_redactor.redact(static_data)
-        safe_code_data = privacy_redactor.redact(code_data)
-        safe_behavioral_data = privacy_redactor.redact(behavioral_data)
-        safe_reputation_data = privacy_redactor.redact(manifest.reputation or {})
-        safe_artifacts_meta = privacy_redactor.redact(manifest.artifacts)
-
         session_payload = {
             "manifest": manifest.model_dump(),
             "assessment": assessment.model_dump(),
@@ -571,9 +757,13 @@ class AnalysisOrchestrator:
             "sandbox": {
                 "backend": sandbox_trace.backend_name if sandbox_trace else "NOT_USED",
                 "execution_status": sandbox_trace.execution_status if sandbox_trace else "NOT_ANALYZED",
+                "network_mode": (sandbox_trace.sandbox_network_mode or sandbox_trace.network_mode) if sandbox_trace else "NOT_USED",
                 "network_verification": sandbox_trace.network_verification_status if sandbox_trace else "UNVERIFIED",
                 "snapshot_name": sandbox_trace.snapshot_name if sandbox_trace else "N/A",
+                "snapshot_uuid": sandbox_trace.baseline_snapshot_uuid if sandbox_trace else "N/A",
                 "revert_status": sandbox_trace.revert_status if sandbox_trace else "NOT_ANALYZED",
+                "trace_hash": manifest.sandbox_trace_hash or "N/A",
+                "telemetry_hashes": sandbox_trace.telemetry_hashes if sandbox_trace else {},
                 "telemetry_available": {
                     "pcap": bool(sandbox_trace and sandbox_trace.pcap_path),
                     "procmon": bool(sandbox_trace and sandbox_trace.procmon_csv_path),
@@ -589,88 +779,6 @@ class AnalysisOrchestrator:
             }
         }
         sanitized_payload = privacy_redactor.redact(session_payload)
-
-        # -------------------------------------------------------------
-        # Phase 20: Case Bundle Layout (CASE-ID/ structure)
-        # -------------------------------------------------------------
-        dir_input = out_dir / "input"
-        dir_reputation = out_dir / "reputation"
-        dir_basic = out_dir / "basic"
-        dir_advanced = out_dir / "advanced"
-        dir_evidence = out_dir / "evidence"
-        dir_report = out_dir / "report"
-        dir_manifest = out_dir / "manifest"
-        dir_sandbox = out_dir / "sandbox"
-
-        for d in (dir_input, dir_reputation, dir_basic, dir_advanced, dir_evidence, dir_report, dir_manifest):
-            d.mkdir(parents=True, exist_ok=True)
-            set_posix_permissions(d, 0o700)
-
-        # Save sandbox artifacts in case/sandbox/ (Phase 11)
-        if sandbox_trace:
-            dir_sandbox.mkdir(parents=True, exist_ok=True)
-            set_posix_permissions(dir_sandbox, 0o700)
-            safe_sandbox_trace = privacy_redactor.redact(sandbox_trace.model_dump())
-            trace_file = dir_sandbox / "sandbox_trace.json"
-            atomic_write_json(trace_file, safe_sandbox_trace)
-            set_posix_permissions(trace_file, 0o600)
-            manifest.record_output_artifact("sandbox/sandbox_trace.json", trace_file)
-            manifest.sandbox_trace_hash = manifest.output_lineage.get("sandbox/sandbox_trace.json", {}).get("sha256")
-
-            if sandbox_trace.execution_metadata_path and Path(sandbox_trace.execution_metadata_path).exists():
-                meta_src = Path(sandbox_trace.execution_metadata_path)
-                meta_dst = dir_sandbox / "execution_metadata.json"
-                if meta_src.resolve() != meta_dst.resolve():
-                    shutil.copy2(meta_src, meta_dst)
-                set_posix_permissions(meta_dst, 0o600)
-                manifest.record_output_artifact("sandbox/execution_metadata.json", meta_dst)
-
-            if sandbox_trace.procmon_csv_path and Path(sandbox_trace.procmon_csv_path).exists():
-                p_src = Path(sandbox_trace.procmon_csv_path)
-                p_dst = dir_sandbox / "procmon.csv"
-                if p_src.resolve() != p_dst.resolve():
-                    shutil.copy2(p_src, p_dst)
-                set_posix_permissions(p_dst, 0o600)
-                manifest.record_output_artifact("sandbox/procmon.csv", p_dst)
-
-            if sandbox_trace.pcap_path and Path(sandbox_trace.pcap_path).exists():
-                p_src = Path(sandbox_trace.pcap_path)
-                p_dst = dir_sandbox / "network.pcap"
-                if p_src.resolve() != p_dst.resolve():
-                    shutil.copy2(p_src, p_dst)
-                set_posix_permissions(p_dst, 0o600)
-                manifest.record_output_artifact("sandbox/network.pcap", p_dst)
-
-            if sandbox_trace.regshot_path and Path(sandbox_trace.regshot_path).exists():
-                r_src = Path(sandbox_trace.regshot_path)
-                r_dst = dir_sandbox / "regshot.txt"
-                if r_src.resolve() != r_dst.resolve():
-                    shutil.copy2(r_src, r_dst)
-                set_posix_permissions(r_dst, 0o600)
-                manifest.record_output_artifact("sandbox/regshot.txt", r_dst)
-
-        # Save input metadata (do NOT copy original sample binary unless requested)
-        input_meta_file = dir_input / "input_metadata.json"
-        atomic_write_json(input_meta_file, safe_artifacts_meta)
-
-        # Save reputation raw stage output
-        rep_file = dir_reputation / "reputation.json"
-        atomic_write_json(rep_file, safe_reputation_data)
-
-        # Save basic triage summary
-        basic_file = dir_basic / "basic_triage.json"
-        atomic_write_json(basic_file, {
-            "static": safe_static_data.get("file_info", {}),
-            "sections_count": len(safe_static_data.get("sections", [])),
-            "imports_count": len(safe_static_data.get("imports", {}))
-        })
-
-        # Save advanced triage summary
-        adv_file = dir_advanced / "advanced_triage.json"
-        atomic_write_json(adv_file, {
-            "code_analysis": safe_code_data,
-            "behavioral_events": len(safe_behavioral_data.get("normalized_events", []))
-        })
 
         # 1. JSON Report
         report_json_path = out_dir / "report.json"
@@ -707,71 +815,22 @@ class AnalysisOrchestrator:
         set_posix_permissions(report_docx_path, 0o600)
         set_posix_permissions(dir_report / "report.docx", 0o600)
 
-        # 4. Evidence Store JSON export - Privacy-Safe by default (Phase 4)
-        evidence_json_path = out_dir / "evidence.json"
-        sanitized_evidence_records = privacy_redactor.redact(evidence_store.to_dict())
-        atomic_write_json(evidence_json_path, sanitized_evidence_records)
-        atomic_write_json(dir_evidence / "evidence.json", sanitized_evidence_records)
-
-        # 5. Findings JSON export - Privacy-Safe by default (Phase 4)
-        findings_json_path = out_dir / "findings.json"
-        sanitized_findings_records = privacy_redactor.redact([f.model_dump() for f in validated_findings])
-        atomic_write_json(findings_json_path, sanitized_findings_records)
-        atomic_write_json(dir_report / "findings.json", sanitized_findings_records)
-
-        # 6. Assessment JSON export - Privacy-Safe by default (Phase 4)
-        assessment_json_path = out_dir / "assessment.json"
-        sanitized_assessment_record = privacy_redactor.redact(assessment.model_dump())
-        atomic_write_json(assessment_json_path, sanitized_assessment_record)
-        atomic_write_json(dir_report / "assessment.json", sanitized_assessment_record)
-
-        # 7. IOCs JSON export - Privacy-Safe by default (Phase 4)
-        iocs_json_path = out_dir / "iocs.json"
-        sanitized_iocs = privacy_redactor.redact({"host_iocs": assessment.host_iocs, "network_iocs": assessment.network_iocs})
-        atomic_write_json(iocs_json_path, sanitized_iocs)
-        atomic_write_json(dir_report / "iocs.json", sanitized_iocs)
-
-        # 8. Coverage JSON export
-        coverage_json_path = out_dir / "coverage.json"
-        cov = getattr(assessment, "coverage", None)
-        cov_dict = cov.model_dump() if hasattr(cov, "model_dump") else (cov if isinstance(cov, dict) else {})
-        sanitized_cov = privacy_redactor.redact(cov_dict)
-        atomic_write_json(coverage_json_path, sanitized_cov)
-        atomic_write_json(dir_report / "coverage.json", sanitized_cov)
-
-        # Opt-in Raw Evidence Export (Phase 4)
-        raw_evidence_json_path = None
-        if export_raw_evidence:
-            raw_evidence_json_path = out_dir / "evidence.raw.json"
-            evidence_store.export(raw_evidence_json_path)
-            evidence_store.export(dir_evidence / "evidence.raw.json")
-            set_posix_permissions(raw_evidence_json_path, 0o600)
-            set_posix_permissions(dir_evidence / "evidence.raw.json", 0o600)
-            manifest.record_output_artifact("evidence.raw.json", raw_evidence_json_path)
-
-        # 9. Ensure artifacts and figures directories exist
+        # Ensure artifacts and figures directories exist
         (out_dir / "artifacts").mkdir(parents=True, exist_ok=True)
         set_posix_permissions(out_dir / "artifacts", 0o700)
         (out_dir / "figures").mkdir(parents=True, exist_ok=True)
         set_posix_permissions(out_dir / "figures", 0o700)
 
         # -------------------------------------------------------------
-        # 11. OUTPUT LINEAGE & MANIFEST INTEGRITY (No self-hashing)
+        # 12. OUTPUT LINEAGE & MANIFEST INTEGRITY (No self-hashing)
         # -------------------------------------------------------------
         notify("Finalizing audit manifest and output lineage hashes...", 13)
         manifest_json_path = out_dir / "analysis_manifest.json"
-        
-        # Record output artifact lineage strictly excluding self-referential manifest files
+
+        # Record report outputs in manifest lineage
         manifest.record_output_artifact("report.json", report_json_path)
         manifest.record_output_artifact("report.md", report_md_path)
         manifest.record_output_artifact("report.docx", report_docx_path)
-        manifest.record_output_artifact("evidence.json", evidence_json_path)
-        manifest.record_output_artifact("findings.json", findings_json_path)
-        manifest.record_output_artifact("assessment.json", assessment_json_path)
-        manifest.record_output_artifact("iocs.json", iocs_json_path)
-        manifest.record_output_artifact("coverage.json", coverage_json_path)
-        if raw_evidence_json_path and raw_evidence_json_path.exists():
-            manifest.record_output_artifact("evidence.raw.json", raw_evidence_json_path)
 
         manifest.complete()
         companion_sha256_path = manifest.export_json(manifest_json_path)

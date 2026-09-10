@@ -47,6 +47,16 @@ class ActionStatus(str, Enum):
     SAFE_DRY_RUN = "SAFE_DRY_RUN"
 
 
+class ExecutionSubStatus(str, Enum):
+    """Fine-grained execution status semantics for in-guest detonation."""
+    START_FAILED = "START_FAILED"
+    STARTED = "STARTED"
+    EXITED = "EXITED"
+    TIMED_OUT = "TIMED_OUT"
+    FAILED = "FAILED"
+    UNKNOWN = "UNKNOWN"
+
+
 class SandboxStatus(str, Enum):
     READY = "READY"
     RUNNING = "RUNNING"
@@ -80,12 +90,104 @@ class SandboxGuestConfig(BaseModel):
     enable_pcap: bool = True
     enable_procmon: bool = True
     enable_regshot: bool = True
+    require_procmon: bool = True
+    require_pcap: bool = True
+    require_regshot: bool = False
+    vbox_user_home: Optional[str] = None
 
     model_config = ConfigDict(use_enum_values=True)
+
+    @property
+    def execution_timeout(self) -> int:
+        return self.execution_timeout_seconds
 
     def get_guest_password(self) -> str:
         """Resolves guest credentials securely from environment, avoiding disk/log serialization."""
         return os.getenv(self.guest_password_env, "")
+
+    @classmethod
+    def load_config(cls, config_path: Optional[str] = None) -> "SandboxGuestConfig":
+        """
+        Loads configuration from TOML file:
+        1. Explicit config_path if provided
+        2. ~/.config/0206/config.toml
+        3. ./0206.toml
+        Falls back to default config if no config file exists.
+        """
+        from pathlib import Path
+        target: Optional[Path] = None
+        if config_path:
+            p = Path(config_path)
+            if p.is_file():
+                target = p
+        else:
+            candidates = [
+                Path.home() / ".config" / "0206" / "config.toml",
+                Path("0206.toml"),
+                Path.home() / ".config" / "0206.toml",
+            ]
+            for c in candidates:
+                if c.is_file():
+                    target = c
+                    break
+
+        if not target:
+            return cls()
+
+        data: Dict[str, Any] = {}
+        try:
+            try:
+                import tomllib
+                with open(target, "rb") as f:
+                    data = tomllib.load(f)
+            except ImportError:
+                import tomli
+                with open(target, "rb") as f:
+                    data = tomli.load(f)
+        except Exception:
+            # Fallback simple line-by-line parser for standard key = "value"
+            try:
+                with open(target, "r", encoding="utf-8") as f:
+                    for line in f:
+                        line = line.strip()
+                        if not line or line.startswith("#") or line.startswith("["):
+                            continue
+                        if "=" in line:
+                            k, v = line.split("=", 1)
+                            k = k.strip()
+                            v = v.strip().strip('"').strip("'")
+                            data[k] = v
+            except Exception:
+                return cls()
+
+        sandbox_dict = data.get("sandbox", data)
+        # Parse fields safely
+        kwargs: Dict[str, Any] = {}
+        valid_keys = set(cls.model_fields.keys())
+        for k, v in sandbox_dict.items():
+            k_clean = k.replace("-", "_")
+            if k_clean in ("execution_timeout", "timeout"):
+                k_clean = "execution_timeout_seconds"
+            if k_clean in valid_keys:
+                if k_clean == "execution_timeout_seconds":
+                    try:
+                        kwargs[k_clean] = int(v)
+                    except (ValueError, TypeError):
+                        pass
+                elif k_clean in ("enable_pcap", "enable_procmon", "enable_regshot", "require_procmon", "require_pcap", "require_regshot", "enable_monitoring"):
+                    if isinstance(v, str):
+                        kwargs[k_clean] = v.lower() in ("true", "1", "yes")
+                    else:
+                        kwargs[k_clean] = bool(v)
+                elif k_clean == "network_mode":
+                    try:
+                        kwargs[k_clean] = SandboxNetworkMode(str(v).upper())
+                    except ValueError:
+                        pass
+                else:
+                    kwargs[k_clean] = str(v)
+
+        return cls(**kwargs)
 
 
 class SandboxLifecycleAction(str, Enum):
@@ -132,8 +234,11 @@ class SandboxExecutionTrace(BaseModel):
     backend_name: str
     vm_name: str = ""
     snapshot_name: str = ""
+    baseline_snapshot_uuid: Optional[str] = None
     network_mode: str = "ISOLATED"
+    sandbox_network_mode: Optional[str] = None
     network_verification_status: str = "UNVERIFIED"
+    sandbox_network_verification_status: Optional[str] = None
     status: SandboxStatus = SandboxStatus.COMPLETED
     started_at: str = Field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
     finished_at: Optional[str] = None

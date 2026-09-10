@@ -1,27 +1,68 @@
 # =====================================================================
 # 0206 - In-Guest Stop Telemetry Script
-# Stops Procmon and converts PML to CSV; stops tshark; diffs registry with Regshot.
+# Stops Procmon and exports PML to CSV; stops tshark; diffs registry with Regshot.
+# Verifies expected output files exist before returning.
 # =====================================================================
-$ErrorActionPreference = "SilentlyContinue"
-$TelemetryDir = "C:\0206\telemetry"
+param (
+    [string]$TelemetryDir = "C:\0206\telemetry"
+)
 
-Write-Host "[*] Terminating Procmon and exporting CSV..."
-$procmon = "C:\Tools\procmon\procmon.exe"
-if (Test-Path $procmon) {
-    Start-Process -FilePath $procmon -ArgumentList "/Terminate" -Wait
-    Start-Sleep -Seconds 2
-    Start-Process -FilePath $procmon -ArgumentList "/OpenLog $TelemetryDir\procmon.pml /SaveAs $TelemetryDir\procmon.csv" -Wait
+$ErrorActionPreference = "Stop"
+
+$report = @{
+    status = "SUCCESS"
+    artifacts = @{}
+    errors = @()
 }
 
-Write-Host "[*] Stopping network packet capture..."
-Stop-Process -Name tshark -Force
-Stop-Process -Name dumpcap -Force
-
-Write-Host "[*] Capturing second registry shot and computing diff..."
-$regshot = "C:\Tools\regshot\regshot-x64.exe"
-if (Test-Path $regshot) {
-    Start-Process -FilePath $regshot -ArgumentList "/s $TelemetryDir\shot2.bin" -Wait
-    Start-Process -FilePath $regshot -ArgumentList "/c $TelemetryDir\shot1.bin $TelemetryDir\shot2.bin $TelemetryDir\regshot.txt" -Wait
+$toolsConfig = @{}
+if (Test-Path "C:\0206\tools_config.json") {
+    try {
+        $toolsConfig = Get-Content "C:\0206\tools_config.json" -Raw | ConvertFrom-Json
+    } catch {}
 }
 
-Write-Host "[+] Telemetry collection halted and formatted."
+# 1. Stop Procmon and export to CSV
+try {
+    $procmonPath = if ($toolsConfig.procmon) { $toolsConfig.procmon } else { "C:\Tools\procmon\procmon.exe" }
+    if (Test-Path $procmonPath) {
+        Start-Process -FilePath $procmonPath -ArgumentList "/Terminate" -Wait
+        Start-Sleep -Milliseconds 1500
+        $pmlFile = "$TelemetryDir\procmon.pml"
+        $csvFile = "$TelemetryDir\procmon.csv"
+        if (Test-Path $pmlFile) {
+            Start-Process -FilePath $procmonPath -ArgumentList "/OpenLog `"$pmlFile`" /SaveAs `"$csvFile`"" -Wait
+        }
+    }
+} catch {
+    $report.errors += "Procmon termination error: $_"
+}
+
+# 2. Terminate network capture
+try {
+    Stop-Process -Name tshark -Force -ErrorAction SilentlyContinue
+    Stop-Process -Name dumpcap -Force -ErrorAction SilentlyContinue
+} catch {}
+
+# 3. Capture second registry shot and compute diff if shot1 exists
+try {
+    $regshotPath = if ($toolsConfig.regshot) { $toolsConfig.regshot } else { "C:\Tools\regshot\regshot-x64.exe" }
+    $shot1 = "$TelemetryDir\shot1.bin"
+    $shot2 = "$TelemetryDir\shot2.bin"
+    $regOut = "$TelemetryDir\regshot.txt"
+    if ((Test-Path $shot1) -and (Test-Path $regshotPath)) {
+        Start-Process -FilePath $regshotPath -ArgumentList "/s `"$shot2`"" -Wait
+        Start-Process -FilePath $regshotPath -ArgumentList "/c `"$shot1`" `"$shot2`" `"$regOut`"" -Wait
+    }
+} catch {
+    $report.errors += "Regshot diff error: $_"
+}
+
+# 4. Report artifact presence
+$report.artifacts["procmon_csv"] = Test-Path "$TelemetryDir\procmon.csv"
+$report.artifacts["network_pcap"] = Test-Path "$TelemetryDir\network.pcap"
+$report.artifacts["regshot_txt"] = Test-Path "$TelemetryDir\regshot.txt"
+
+$jsonOut = $report | ConvertTo-Json -Depth 4
+Write-Output $jsonOut
+exit 0

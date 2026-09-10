@@ -40,6 +40,21 @@ class TestCLICommands(unittest.TestCase):
         self.assertIn("--offline", proc.stdout)
         self.assertIn("--adaptive", proc.stdout)
 
+    def test_cli_sandbox_smoke_test_not_run_when_no_vm(self):
+        proc = subprocess.run(
+            [sys.executable, "main.py", "sandbox", "smoke-test", "--backend", "virtualbox"],
+            capture_output=True,
+            text=True
+        )
+        self.assertEqual(proc.returncode, 0)
+        self.assertIn("REAL_VM_SMOKE_TEST=NOT_RUN", proc.stdout)
+
+    def test_cli_lab_provision_flags(self):
+        proc = subprocess.run([sys.executable, "main.py", "lab", "--help"], capture_output=True, text=True)
+        self.assertEqual(proc.returncode, 0)
+        self.assertIn("--target-dir", proc.stdout)
+        self.assertIn("--output", proc.stdout)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -1,18 +1,22 @@
 # =====================================================================
 # 0206 - In-Guest Prepare Collection Script
-# Discovers dropped files in C:\0206\work and extracts metadata (SHA256, size, path).
-# Does NOT copy dropped executables directly.
+# Discovers dropped files in session work directory and extracts metadata (SHA256, size, path).
+# Never copies executable binaries directly.
 # =====================================================================
-$ErrorActionPreference = "SilentlyContinue"
+param (
+    [string]$WorkDir = "C:\0206\work",
+    [string]$TelemetryDir = "C:\0206\telemetry",
+    [string]$TraceId = "",
+    [string]$SampleSha256 = ""
+)
 
-$WorkDir = "C:\0206\work"
-$TelemetryDir = "C:\0206\telemetry"
+$ErrorActionPreference = "Stop"
 
 $dropped = @()
 if (Test-Path $WorkDir) {
-    $files = Get-ChildItem -Path $WorkDir -File -Recurse
+    $files = Get-ChildItem -Path $WorkDir -File -Recurse -ErrorAction SilentlyContinue
     foreach ($f in $files) {
-        $hash = (Get-FileHash -Path $f.FullName -Algorithm SHA256).Hash
+        $hash = (Get-FileHash -Path $f.FullName -Algorithm SHA256).Hash.ToLower()
         $dropped += @{
             filename = $f.Name
             guest_path = $f.FullName
@@ -23,9 +27,13 @@ if (Test-Path $WorkDir) {
 }
 
 $metadata = @{
-    dropped_files = $dropped
+    trace_id = $TraceId
+    sample_sha256 = $SampleSha256
     collection_time_utc = (Get-Date).ToUniversalTime().ToString("o")
+    dropped_files = $dropped
 }
 
-$metadata | ConvertTo-Json -Depth 4 | Set-Content -Path "$TelemetryDir\execution_metadata.json" -Encoding UTF8
-Write-Host "[+] Prepared execution metadata with $($dropped.Count) dropped file records."
+$metaJson = $metadata | ConvertTo-Json -Depth 4
+Set-Content -Path "$TelemetryDir\execution_metadata.json" -Value $metaJson -Encoding UTF8
+Write-Output $metaJson
+exit 0

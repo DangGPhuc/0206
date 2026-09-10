@@ -41,6 +41,7 @@ from core.doctor import run_doctor
 from core.selftest import run_selftest
 from reporting.validators import TemplateValidator
 from sandbox.doctor import run_sandbox_doctor
+from sandbox.schema import SandboxGuestConfig
 
 console = Console()
 
@@ -256,7 +257,7 @@ def cmd_validate_case(case_path_str: Optional[str]):
         sys.exit(1)
 
 
-def cmd_lab(action: str = "check", output_path: Optional[str] = None, mode: str = "ISOLATED"):
+def cmd_lab(action: str = "check", output_path: Optional[str] = None, target_dir: Optional[str] = None, mode: str = "ISOLATED"):
     """Manages analysis lab auditing, provisioning, and network verification."""
     from lab.windows.detector import WindowsLabDetector
     from lab.windows.provisioner import WindowsLabProvisioner
@@ -264,11 +265,16 @@ def cmd_lab(action: str = "check", output_path: Optional[str] = None, mode: str 
 
     if action == "provision":
         script = WindowsLabProvisioner.generate_powershell_script()
+        dest_path = None
         if output_path:
-            out_p = Path(output_path)
-            out_p.parent.mkdir(parents=True, exist_ok=True)
-            out_p.write_text(script, encoding="utf-8")
-            console.print(f"[bold green]✔ Provisioning script generated at:[/bold green] [cyan]{out_p.resolve()}[/cyan]")
+            dest_path = Path(output_path)
+        elif target_dir:
+            dest_path = Path(target_dir) / "provision_0206_lab.ps1"
+
+        if dest_path:
+            dest_path.parent.mkdir(parents=True, exist_ok=True)
+            dest_path.write_text(script, encoding="utf-8")
+            console.print(f"[bold green]✔ Provisioning script generated at:[/bold green] [cyan]{dest_path.resolve()}[/cyan]")
         else:
             console.print(script)
     elif action == "verify-net":
@@ -286,6 +292,104 @@ def cmd_lab(action: str = "check", output_path: Optional[str] = None, mode: str 
     else:  # check
         console.print("[*] Auditing Windows REM Lab tools & environment...")
         run_doctor(console)
+
+
+def cmd_sandbox_smoke_test(backend_name: str = "virtualbox", config: Optional[SandboxGuestConfig] = None):
+    """
+    Executes a harmless VM smoke test using repository-generated harmless fixture.
+    Refuses arbitrary sample paths.
+    If real VirtualBox VM is not available, reports REAL_VM_SMOKE_TEST=NOT_RUN.
+    """
+    cfg = config or SandboxGuestConfig()
+    backend_type = (backend_name or cfg.backend or "virtualbox").lower()
+    console.print(Panel(
+        f"[bold cyan]🧪 0206 Harmless Sandbox VM Smoke Test: {backend_type.upper()}[/bold cyan]\n"
+        f"Target VM: [cyan]{cfg.vm_name}[/cyan] | Snapshot: [cyan]{cfg.snapshot_name}[/cyan]\n"
+        "[dim]Safety Guarantee: Refuses arbitrary sample paths; strictly executes benign test fixture.[/dim]",
+        border_style="cyan"
+    ))
+
+    if backend_type != "virtualbox":
+        console.print(f"[yellow]Backend '{backend_type}' is not supported for live VM smoke testing.[/yellow]")
+        console.print("[bold yellow]REAL_VM_SMOKE_TEST=NOT_RUN[/bold yellow]")
+        return
+
+    from sandbox.backends.virtualbox import VirtualBoxSandboxBackend
+    from sandbox.controller import SandboxController
+
+    vbox = VirtualBoxSandboxBackend(config=cfg)
+    if not vbox.is_available():
+        console.print("[yellow]VBoxManage CLI is not installed or available on this host.[/yellow]")
+        console.print("[bold yellow]REAL_VM_SMOKE_TEST=NOT_RUN[/bold yellow]")
+        return
+
+    vm_rec = vbox.verify_vm()
+    if not vm_rec.is_success():
+        console.print(f"[yellow]Configured VM '{cfg.vm_name}' not available on host: {vm_rec.details}[/yellow]")
+        console.print("[bold yellow]REAL_VM_SMOKE_TEST=NOT_RUN[/bold yellow]")
+        return
+
+    snap_rec = vbox.verify_baseline()
+    if not snap_rec.is_success():
+        console.print(f"[yellow]Baseline snapshot '{cfg.snapshot_name}' not available on VM: {snap_rec.details}[/yellow]")
+        console.print("[bold yellow]REAL_VM_SMOKE_TEST=NOT_RUN[/bold yellow]")
+        return
+
+    # Real VM is present! Use only harmless test PE fixture
+    fixture_path = Path(__file__).resolve().parent.parent / "tests" / "sample_benign_triage.exe"
+    if not fixture_path.exists():
+        try:
+            from tests.generate_test_artifacts import generate_benign_pe
+            fixture_path = generate_benign_pe()
+        except Exception:
+            pass
+
+    if not fixture_path.exists():
+        console.print("[yellow]Harmless test fixture could not be located or built.[/yellow]")
+        console.print("[bold yellow]REAL_VM_SMOKE_TEST=NOT_RUN[/bold yellow]")
+        return
+
+    console.print(f"[*] Executing harmless smoke test with repository benign fixture: [cyan]{fixture_path.name}[/cyan] ...")
+    with tempfile.TemporaryDirectory() as td:
+        out_dir = Path(td) / "smoke_test_case"
+        out_dir.mkdir(parents=True, exist_ok=True)
+        controller = SandboxController(config=cfg, backend_instance=vbox)
+        trace = controller.run_safe_session(str(fixture_path), str(out_dir / "sandbox"))
+
+        if trace.status not in (SandboxStatus.COMPLETED, SandboxStatus.PARTIAL) or trace.revert_status != ActionStatus.VERIFIED.value:
+            console.print(f"[bold red]Smoke test failed: {trace.errors}[/bold red]")
+            console.print("[bold red]REAL_VM_SMOKE_TEST=FAILED[/bold red]")
+            sys.exit(1)
+
+        console.print("[bold green]✔ Live VM smoke test completed successfully![/bold green]")
+        console.print("[bold green]REAL_VM_SMOKE_TEST=PASSED[/bold green]")
+
+
+def resolve_sandbox_config(args) -> SandboxGuestConfig:
+    """Loads and resolves SandboxGuestConfig from config files and explicit CLI flags."""
+    cfg_file = getattr(args, "sandbox_config", None)
+    cfg = SandboxGuestConfig.load_config(cfg_file)
+    if getattr(args, "vm_name", None):
+        cfg.vm_name = args.vm_name
+    if getattr(args, "snapshot_name", None):
+        cfg.snapshot_name = args.snapshot_name
+    if getattr(args, "guest_username", None):
+        cfg.guest_username = args.guest_username
+    if getattr(args, "guest_password_env", None):
+        cfg.guest_password_env = args.guest_password_env
+    if getattr(args, "network_mode", None):
+        try:
+            cfg.network_mode = SandboxNetworkMode(args.network_mode.upper())
+        except ValueError:
+            pass
+    if getattr(args, "execution_timeout", None):
+        try:
+            cfg.execution_timeout_seconds = int(args.execution_timeout)
+        except (ValueError, TypeError):
+            pass
+    if getattr(args, "vbox_user_home", None):
+        cfg.vbox_user_home = args.vbox_user_home
+    return cfg
 
 
 def display_findings_table(findings: list):
@@ -426,6 +530,7 @@ def run_analyze_cli(
     export_raw_evidence: bool = False,
     detonate: bool = False,
     sandbox_backend: Optional[str] = None,
+    sandbox_config: Optional[SandboxGuestConfig] = None,
     quiet: bool = False,
     json_output: bool = False,
     no_color: bool = False
@@ -457,7 +562,8 @@ def run_analyze_cli(
                 export_raw_evidence=export_raw_evidence,
                 step_callback=None,
                 detonate=detonate,
-                sandbox_backend=sandbox_backend
+                sandbox_backend=sandbox_backend,
+                sandbox_config=sandbox_config
             )
         except Exception as e:
             if json_output:
@@ -479,20 +585,24 @@ def run_analyze_cli(
             print(f"Output: {result.output_dir.resolve()}")
             return
 
-    # Normal interactive mode with rich presentation
+    # Interactive rich console rendering
+    result: Optional[OrchestrationResult] = None
     with Progress(
         SpinnerColumn(),
         TextColumn("[progress.description]{task.description}"),
         BarColumn(),
-        console=console
+        TextColumn("[progress.percentage]{task.percentage:>3.0f}%"),
+        TimeRemainingColumn(),
+        console=console,
+        transient=True
     ) as progress:
-        task = progress.add_task("[cyan]Initializing Triage Pipeline...", total=14)
+        task = progress.add_task("[bold cyan]Initializing Triage Pipeline...", total=14)
 
-        def step_callback(msg: str, step: int):
-            progress.update(task, completed=step, description=f"[cyan]{msg}")
+        def step_callback(step_name: str, step_num: int):
+            progress.update(task, completed=step_num, description=f"[bold cyan]{step_name}")
 
         try:
-            result: OrchestrationResult = orchestrator.run(
+            result = orchestrator.run(
                 sample_path=sample_path,
                 pcap_path=pcap_path,
                 procmon_path=procmon_path,
@@ -511,7 +621,8 @@ def run_analyze_cli(
                 export_raw_evidence=export_raw_evidence,
                 step_callback=step_callback,
                 detonate=detonate,
-                sandbox_backend=sandbox_backend
+                sandbox_backend=sandbox_backend,
+                sandbox_config=sandbox_config
             )
             progress.update(task, completed=14, description="[bold green]Analysis Complete!")
         except Exception as e:
@@ -621,14 +732,31 @@ def main():
     p_analyze.add_argument("--quiet", "-q", action="store_true", help="Quiet output (suppress banner, progress bars, non-critical logs)")
     p_analyze.add_argument("--json", action="store_true", help="Emit report results as JSON to stdout")
     p_analyze.add_argument("--no-color", action="store_true", help="Disable colored / ANSI output")
+    # Sandbox configuration options
+    p_analyze.add_argument("--sandbox-config", type=str, default=None, help="Path to sandbox configuration TOML file")
+    p_analyze.add_argument("--vm-name", type=str, default=None, help="Sandbox VM name override")
+    p_analyze.add_argument("--snapshot-name", type=str, default=None, help="Sandbox baseline snapshot name override")
+    p_analyze.add_argument("--guest-username", type=str, default=None, help="Sandbox guest OS username override")
+    p_analyze.add_argument("--guest-password-env", type=str, default=None, help="Sandbox guest password environment variable name")
+    p_analyze.add_argument("--network-mode", type=str, choices=["ISOLATED", "HOST_ONLY", "SIMULATED_INTERNET"], default=None, help="Sandbox network mode")
+    p_analyze.add_argument("--execution-timeout", type=int, default=None, help="Sandbox execution timeout in seconds")
+    p_analyze.add_argument("--vbox-user-home", type=str, default=None, help="VirtualBox configuration directory (VBOX_USER_HOME)")
 
     # Subcommand: doctor
     subparsers.add_parser("doctor", help="Run capability diagnostics and dependency check")
 
     # Subcommand: sandbox
     p_sandbox = subparsers.add_parser("sandbox", help="Manage and audit dynamic detonation sandbox environments")
-    p_sandbox.add_argument("action", choices=["doctor"], nargs="?", default="doctor", help="Sandbox action (default: doctor)")
+    p_sandbox.add_argument("action", choices=["doctor", "smoke-test"], nargs="?", default="doctor", help="Sandbox action (doctor, smoke-test)")
     p_sandbox.add_argument("--backend", type=str, default="virtualbox", choices=["virtualbox", "qemu", "vmware", "external", "builtin", "builtin_safe"], help="Sandbox hypervisor backend")
+    p_sandbox.add_argument("--sandbox-config", type=str, default=None, help="Path to sandbox configuration TOML file")
+    p_sandbox.add_argument("--vm-name", type=str, default=None, help="Sandbox VM name override")
+    p_sandbox.add_argument("--snapshot-name", type=str, default=None, help="Sandbox baseline snapshot name override")
+    p_sandbox.add_argument("--guest-username", type=str, default=None, help="Sandbox guest OS username override")
+    p_sandbox.add_argument("--guest-password-env", type=str, default=None, help="Sandbox guest password environment variable name")
+    p_sandbox.add_argument("--network-mode", type=str, choices=["ISOLATED", "HOST_ONLY", "SIMULATED_INTERNET"], default=None, help="Sandbox network mode")
+    p_sandbox.add_argument("--execution-timeout", type=int, default=None, help="Sandbox execution timeout in seconds")
+    p_sandbox.add_argument("--vbox-user-home", type=str, default=None, help="VirtualBox configuration directory (VBOX_USER_HOME)")
 
     # Subcommand: capabilities
     subparsers.add_parser("capabilities", help="List detected Tier 1, 2, and 3 capabilities")
@@ -656,6 +784,7 @@ def main():
     p_lab = subparsers.add_parser("lab", help="Manage and audit analysis lab workstation & network")
     p_lab.add_argument("action", choices=["check", "provision", "verify-net"], nargs="?", default="check", help="Lab action")
     p_lab.add_argument("--output", "-o", type=str, help="Destination file for generated provisioning script")
+    p_lab.add_argument("--target-dir", type=str, default=None, help="Destination directory for generated provisioning script")
     p_lab.add_argument("--mode", type=str, default="ISOLATED", choices=["ISOLATED", "HOST_ONLY", "SIMULATED_INTERNET"], help="Expected network mode")
 
     # Backward compatibility: Top-level arguments for direct `0206 --sample ...` or `0206 sample.exe`
@@ -677,6 +806,14 @@ def main():
     parser.add_argument("--backend", type=str, choices=["memory", "sqlite"], default=None, help="[DEPRECATED] Alias for --evidence-backend")
     parser.add_argument("--detonate", action="store_true", default=False, help="Request live sample execution inside configured sandbox VM")
     parser.add_argument("--sandbox", type=str, choices=["virtualbox", "qemu", "vmware", "external", "builtin", "builtin_safe"], default="virtualbox", help="Sandbox backend for live detonation")
+    parser.add_argument("--sandbox-config", type=str, default=None, help="Path to sandbox configuration TOML file")
+    parser.add_argument("--vm-name", type=str, default=None, help="Sandbox VM name override")
+    parser.add_argument("--snapshot-name", type=str, default=None, help="Sandbox baseline snapshot name override")
+    parser.add_argument("--guest-username", type=str, default=None, help="Sandbox guest OS username override")
+    parser.add_argument("--guest-password-env", type=str, default=None, help="Sandbox guest password environment variable name")
+    parser.add_argument("--network-mode", type=str, choices=["ISOLATED", "HOST_ONLY", "SIMULATED_INTERNET"], default=None, help="Sandbox network mode")
+    parser.add_argument("--execution-timeout", type=int, default=None, help="Sandbox execution timeout in seconds")
+    parser.add_argument("--vbox-user-home", type=str, default=None, help="VirtualBox configuration directory (VBOX_USER_HOME)")
     parser.add_argument("--api-key", type=str, help="[DEPRECATED] API key for remote LLM provider. Prefer OPENAI_API_KEY / ANTHROPIC_API_KEY env vars.")
     parser.add_argument("--model", type=str, default=None)
     parser.add_argument("--export-raw-evidence", action="store_true", help="Export unredacted raw internal evidence to evidence.raw.json")
@@ -726,12 +863,16 @@ def main():
         cmd_validate_case(args.case_path)
         return
     elif args.subcommand == "lab":
-        cmd_lab(args.action, args.output, args.mode)
+        cmd_lab(args.action, args.output, getattr(args, "target_dir", None), args.mode)
         return
     elif args.subcommand == "sandbox":
         action = getattr(args, "action", "doctor")
-        if action == "doctor":
-            success = run_sandbox_doctor(console, backend_name=args.backend)
+        s_cfg = resolve_sandbox_config(args)
+        if action == "smoke-test":
+            cmd_sandbox_smoke_test(backend_name=args.backend, config=s_cfg)
+            return
+        elif action == "doctor":
+            success = run_sandbox_doctor(console, backend_name=args.backend, config=s_cfg)
             if not success:
                 sys.exit(1)
             return
@@ -740,6 +881,7 @@ def main():
         ev_backend = getattr(args, "evidence_backend", None) or getattr(args, "backend", None) or "memory"
         if getattr(args, "backend", None) and not is_quiet_or_json:
             console.print("[yellow][!] Warning: '--backend' is deprecated; prefer '--evidence-backend'.[/yellow]")
+        s_cfg = resolve_sandbox_config(args)
         run_analyze_cli(
             sample_path=sample,
             pcap_path=args.pcap,
@@ -759,6 +901,7 @@ def main():
             export_raw_evidence=args.export_raw_evidence,
             detonate=getattr(args, "detonate", False),
             sandbox_backend=getattr(args, "sandbox", "virtualbox"),
+            sandbox_config=s_cfg,
             quiet=args.quiet,
             json_output=args.json,
             no_color=args.no_color
@@ -772,6 +915,7 @@ def main():
         if out_dir and out_dir.endswith(".docx"):
             out_dir = str(Path(out_dir).parent)
         ev_backend = getattr(args, "evidence_backend", None) or getattr(args, "backend", None) or "memory"
+        s_cfg = resolve_sandbox_config(args)
         run_analyze_cli(
             sample_path=sample,
             pcap_path=args.pcap,
@@ -791,6 +935,7 @@ def main():
             export_raw_evidence=args.export_raw_evidence,
             detonate=getattr(args, "detonate", False),
             sandbox_backend=getattr(args, "sandbox", "virtualbox"),
+            sandbox_config=s_cfg,
             quiet=args.quiet,
             json_output=args.json,
             no_color=args.no_color

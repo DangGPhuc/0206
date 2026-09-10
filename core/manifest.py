@@ -90,11 +90,14 @@ class AnalysisManifest(BaseModel):
     ai_metadata: Dict[str, Any] = Field(default_factory=dict)
     synthesizer: Dict[str, Any] = Field(default_factory=dict)
     privacy_mode: str = "strict"
-    profile: str = "standard"
     sandbox_provider: Optional[str] = "NOT_USED"
+    sandbox_network_mode: Optional[str] = None
+    sandbox_network_verification_status: Optional[str] = "UNVERIFIED"
     network_mode: Optional[str] = "UNVERIFIED"
     snapshot_identifier: Optional[str] = None
+    snapshot_uuid: Optional[str] = None
     sandbox_trace_hash: Optional[str] = None
+    telemetry_hashes: Dict[str, str] = Field(default_factory=dict)
     configuration_hash: Optional[str] = None
     reputation: Dict[str, Any] = Field(default_factory=dict)
     template_name: Optional[str] = None

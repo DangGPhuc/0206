@@ -302,10 +302,13 @@ pip install -e .
 #    - Guest harness: Ensure C:\0206\tools, work, telemetry, scripts exist
 #    - Take a clean baseline snapshot: clean_triage_base
 
-# 5. Verify sandbox readiness (read-only preflight; never executes a sample):
+# 5. Verify sandbox readiness (two-stage read-only preflight; never executes a sample):
 0206 sandbox doctor --backend virtualbox
 
-# 6. Execute fail-closed detonation analysis:
+# 6. Optional: Run harmless smoke test against an isolated clean VM (never runs malware):
+0206 sandbox smoke-test --backend virtualbox
+
+# 7. Execute fail-closed detonation analysis:
 export SANDBOX_GUEST_PASSWORD="YourGuestPassword"
 0206 analyze sample.exe --detonate --sandbox virtualbox --offline
 ```
