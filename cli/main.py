@@ -30,7 +30,7 @@ except Exception:
 from rich.console import Console
 from rich.panel import Panel
 from rich.table import Table
-from rich.progress import Progress, SpinnerColumn, TextColumn, BarColumn
+from rich.progress import Progress, SpinnerColumn, TextColumn, BarColumn, TimeRemainingColumn
 from rich.text import Text
 
 from config import ENGINE_NAME, ENGINE_VERSION
