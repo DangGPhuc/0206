@@ -1,4 +1,4 @@
-# Forensic + Malware in Windows
+# DFIR + Malware in Windows
 ### Hệ thống Giám sát, Đóng băng và Tái dựng Sự cố An ninh mạng Theo Trục Thời gian
 
 > **Ý tưởng cốt lõi**: Không cố biến mọi thứ thành snapshot nặng nề và không lãng phí tài nguyên chạy AI 24/7.  
